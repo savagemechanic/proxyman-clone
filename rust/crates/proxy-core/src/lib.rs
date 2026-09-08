@@ -15,10 +15,19 @@ pub enum ClientCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
-    Pong { protocol_version: u16 },
-    Status { status: EngineStatus },
-    Transactions { transactions: Vec<CapturedTransaction> },
-    Error { code: String, message: String },
+    Pong {
+        protocol_version: u16,
+    },
+    Status {
+        status: EngineStatus,
+    },
+    Transactions {
+        transactions: Vec<CapturedTransaction>,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
