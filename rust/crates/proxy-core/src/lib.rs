@@ -1,3 +1,4 @@
+pub mod body;
 pub mod http;
 
 use serde::{Deserialize, Serialize};
@@ -76,6 +77,15 @@ pub struct HeaderField {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BodyPreview {
+    pub content_type: Option<String>,
+    pub text: Option<String>,
+    pub captured_bytes: u64,
+    pub total_bytes: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapturedTransaction {
     pub id: u64,
     pub started_at_unix_ms: u64,
@@ -85,9 +95,11 @@ pub struct CapturedTransaction {
     pub target: String,
     pub request_headers: Vec<HeaderField>,
     pub request_body_bytes: u64,
+    pub request_body_preview: Option<BodyPreview>,
     pub status_code: Option<u16>,
     pub response_headers: Vec<HeaderField>,
     pub response_body_bytes: u64,
+    pub response_body_preview: Option<BodyPreview>,
     pub state: TransactionState,
 }
 
@@ -145,9 +157,11 @@ mod tests {
                 target: "/".into(),
                 request_headers: Vec::new(),
                 request_body_bytes: 0,
+                request_body_preview: None,
                 status_code: Some(200),
                 response_headers: Vec::new(),
                 response_body_bytes: 0,
+                response_body_preview: None,
                 state: TransactionState::Complete,
             })
             .collect::<Vec<_>>();

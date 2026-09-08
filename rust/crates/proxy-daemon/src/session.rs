@@ -6,10 +6,10 @@ use std::{
     },
 };
 
-use proxy_core::{CapturedTransaction, TransactionState};
+use proxy_core::{BodyPreview, CapturedTransaction, TransactionState};
 use tokio::sync::RwLock;
 
-const DEFAULT_CAPACITY: usize = 10_000;
+const DEFAULT_CAPACITY: usize = 1_000;
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -51,12 +51,23 @@ impl SessionStore {
         }
     }
 
+    pub async fn set_request_preview(&self, id: u64, preview: BodyPreview) {
+        let mut transactions = self.inner.transactions.write().await;
+        if let Some(transaction) = transactions
+            .iter_mut()
+            .find(|transaction| transaction.id == id)
+        {
+            transaction.request_body_bytes = preview.total_bytes;
+            transaction.request_body_preview = Some(preview);
+        }
+    }
+
     pub async fn complete(
         &self,
         id: u64,
         status_code: u16,
         response_headers: Vec<proxy_core::HeaderField>,
-        response_body_bytes: u64,
+        response_preview: BodyPreview,
     ) {
         let mut transactions = self.inner.transactions.write().await;
         if let Some(transaction) = transactions
@@ -65,7 +76,8 @@ impl SessionStore {
         {
             transaction.status_code = Some(status_code);
             transaction.response_headers = response_headers;
-            transaction.response_body_bytes = response_body_bytes;
+            transaction.response_body_bytes = response_preview.total_bytes;
+            transaction.response_body_preview = Some(response_preview);
             transaction.state = TransactionState::Complete;
         }
     }
@@ -105,9 +117,11 @@ mod tests {
             target: "/".into(),
             request_headers: Vec::new(),
             request_body_bytes: 0,
+            request_body_preview: None,
             status_code: None,
             response_headers: Vec::new(),
             response_body_bytes: 0,
+            response_body_preview: None,
             state: TransactionState::Pending,
         }
     }

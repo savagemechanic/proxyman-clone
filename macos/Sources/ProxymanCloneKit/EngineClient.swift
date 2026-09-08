@@ -22,6 +22,22 @@ public struct HeaderField: Codable, Equatable, Sendable {
     public let value: String
 }
 
+public struct BodyPreview: Codable, Equatable, Sendable {
+    public let contentType: String?
+    public let text: String?
+    public let capturedBytes: UInt64
+    public let totalBytes: UInt64
+    public let truncated: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case contentType = "content_type"
+        case text
+        case capturedBytes = "captured_bytes"
+        case totalBytes = "total_bytes"
+        case truncated
+    }
+}
+
 public struct CapturedTransaction: Codable, Equatable, Identifiable, Sendable {
     public let id: UInt64
     public let startedAtUnixMs: UInt64
@@ -31,9 +47,11 @@ public struct CapturedTransaction: Codable, Equatable, Identifiable, Sendable {
     public let target: String
     public let requestHeaders: [HeaderField]
     public let requestBodyBytes: UInt64
+    public let requestBodyPreview: BodyPreview?
     public let statusCode: UInt16?
     public let responseHeaders: [HeaderField]
     public let responseBodyBytes: UInt64
+    public let responseBodyPreview: BodyPreview?
     public let state: String
 
     enum CodingKeys: String, CodingKey {
@@ -45,9 +63,11 @@ public struct CapturedTransaction: Codable, Equatable, Identifiable, Sendable {
         case target
         case requestHeaders = "request_headers"
         case requestBodyBytes = "request_body_bytes"
+        case requestBodyPreview = "request_body_preview"
         case statusCode = "status_code"
         case responseHeaders = "response_headers"
         case responseBodyBytes = "response_body_bytes"
+        case responseBodyPreview = "response_body_preview"
         case state
     }
 }
@@ -100,7 +120,7 @@ public actor EngineClient {
                             return
                         }
 
-                        connection.receive(minimumIncompleteLength: 1, maximumLength: 4_194_304) { data, _, _, error in
+                        connection.receive(minimumIncompleteLength: 1, maximumLength: 8_388_608) { data, _, _, error in
                             if let error {
                                 completion.finish(.failure(error), connection: connection)
                             } else if let data {
