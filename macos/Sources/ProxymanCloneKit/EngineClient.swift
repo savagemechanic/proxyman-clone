@@ -68,7 +68,12 @@ public actor EngineClient {
                             if let error {
                                 finish(.failure(error))
                             } else if let data {
-                                let firstLine = data.split(separator: 0x0A, maxSplits: 1).first.map(Data.init) ?? data
+                                let firstLine: Data
+                                if let newline = data.firstIndex(of: UInt8(ascii: "\n")) {
+                                    firstLine = data.subdata(in: data.startIndex..<newline)
+                                } else {
+                                    firstLine = data
+                                }
                                 finish(.success(firstLine))
                             } else {
                                 finish(.failure(EngineClientError.invalidResponse))
