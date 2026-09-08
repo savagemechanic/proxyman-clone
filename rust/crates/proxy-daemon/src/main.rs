@@ -10,7 +10,9 @@ use std::{
 use anyhow::Context;
 use certificates::CertificateAuthority;
 use proxy_core::{
-    CapturedTransaction, ClientCommand, EngineStatus, HeaderField, ProxyState, TransactionState,
+    BodyPreview, CapturedTransaction, ClientCommand, EngineStatus, HeaderField, ProxyState,
+    TransactionState,
+    body::{BodyCapture, content_type},
     handle_command,
     http::{
         MAX_REQUEST_HEAD_BYTES, MAX_RESPONSE_HEAD_BYTES, content_length, find_request_head_end,
@@ -21,7 +23,7 @@ use proxy_core::{
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName};
 use session::SessionStore;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, copy},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::RwLock,
 };
@@ -224,7 +226,10 @@ async fn serve_proxy_client(
             &parsed,
         )
         .await;
-        runtime.session.complete(id, 200, Vec::new(), 0).await;
+        runtime
+            .session
+            .complete(id, 200, Vec::new(), empty_preview())
+            .await;
         let mut upstream = upstream;
         let _ = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await?;
         return Ok(());
@@ -316,18 +321,23 @@ where
     upstream.write_all(&upstream_request_head(&parsed)).await?;
     let already_buffered = &buffered[head_end..];
     let initial_body_bytes = already_buffered.len().min(request_body_length as usize);
+    let mut request_capture = BodyCapture::default();
     if initial_body_bytes > 0 {
-        upstream
-            .write_all(&already_buffered[..initial_body_bytes])
-            .await?;
+        let body = &already_buffered[..initial_body_bytes];
+        request_capture.ingest(body);
+        upstream.write_all(body).await?;
     }
-    copy_exact_remaining(
+    copy_exact_remaining_with_capture(
         &mut downstream,
         &mut upstream,
         request_body_length.saturating_sub(initial_body_bytes as u64),
+        &mut request_capture,
     )
     .await?;
     upstream.flush().await?;
+    session
+        .set_request_preview(id, request_capture.finish(content_type(&parsed.headers)))
+        .await;
 
     let response_buffer = match read_http_head(&mut upstream, HeadKind::Response).await {
         Ok(bytes) => bytes,
@@ -341,8 +351,9 @@ where
     let response = parse_response_head(&response_buffer[..response_head_end])?;
 
     downstream.write_all(&response_buffer).await?;
-    let buffered_response_body = (response_buffer.len() - response_head_end) as u64;
-    let remaining_response_body = copy(&mut upstream, &mut downstream).await?;
+    let mut response_capture = BodyCapture::default();
+    response_capture.ingest(&response_buffer[response_head_end..]);
+    copy_with_capture(&mut upstream, &mut downstream, &mut response_capture).await?;
     downstream.flush().await?;
 
     session
@@ -350,7 +361,7 @@ where
             id,
             response.status_code,
             header_fields(&response.headers),
-            buffered_response_body.saturating_add(remaining_response_body),
+            response_capture.finish(content_type(&response.headers)),
         )
         .await;
 
@@ -384,9 +395,11 @@ async fn begin_transaction(
             target: parsed.destination.origin_form_target.clone(),
             request_headers: header_fields(&parsed.headers),
             request_body_bytes,
+            request_body_preview: None,
             status_code: None,
             response_headers: Vec::new(),
             response_body_bytes: 0,
+            response_body_preview: None,
             state: TransactionState::Pending,
         })
         .await;
@@ -405,10 +418,11 @@ fn header_fields(headers: &[(String, String)]) -> Vec<HeaderField> {
         .collect()
 }
 
-async fn copy_exact_remaining<R, W>(
+async fn copy_exact_remaining_with_capture<R, W>(
     reader: &mut R,
     writer: &mut W,
     mut remaining: u64,
+    capture: &mut BodyCapture,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -421,10 +435,42 @@ where
         if read == 0 {
             anyhow::bail!("connection closed before declared request body completed");
         }
+        capture.ingest(&buffer[..read]);
         writer.write_all(&buffer[..read]).await?;
         remaining -= read as u64;
     }
     Ok(())
+}
+
+async fn copy_with_capture<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    capture: &mut BodyCapture,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        capture.ingest(&buffer[..read]);
+        writer.write_all(&buffer[..read]).await?;
+    }
+    Ok(())
+}
+
+fn empty_preview() -> BodyPreview {
+    BodyPreview {
+        content_type: None,
+        text: None,
+        captured_bytes: 0,
+        total_bytes: 0,
+        truncated: false,
+    }
 }
 
 #[derive(Clone, Copy)]
