@@ -1,4 +1,10 @@
-use std::{collections::VecDeque, sync::{Arc, atomic::{AtomicU64, Ordering}}};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use proxy_core::{CapturedTransaction, TransactionState};
 use tokio::sync::RwLock;
@@ -53,7 +59,10 @@ impl SessionStore {
         response_body_bytes: u64,
     ) {
         let mut transactions = self.inner.transactions.write().await;
-        if let Some(transaction) = transactions.iter_mut().find(|transaction| transaction.id == id) {
+        if let Some(transaction) = transactions
+            .iter_mut()
+            .find(|transaction| transaction.id == id)
+        {
             transaction.status_code = Some(status_code);
             transaction.response_headers = response_headers;
             transaction.response_body_bytes = response_body_bytes;
@@ -63,13 +72,22 @@ impl SessionStore {
 
     pub async fn fail(&self, id: u64) {
         let mut transactions = self.inner.transactions.write().await;
-        if let Some(transaction) = transactions.iter_mut().find(|transaction| transaction.id == id) {
+        if let Some(transaction) = transactions
+            .iter_mut()
+            .find(|transaction| transaction.id == id)
+        {
             transaction.state = TransactionState::Failed;
         }
     }
 
     pub async fn list(&self) -> Vec<CapturedTransaction> {
-        self.inner.transactions.read().await.iter().cloned().collect()
+        self.inner
+            .transactions
+            .read()
+            .await
+            .iter()
+            .cloned()
+            .collect()
     }
 }
 
@@ -101,6 +119,9 @@ mod tests {
         store.insert(transaction(2)).await;
         store.insert(transaction(3)).await;
         let captured = store.list().await;
-        assert_eq!(captured.iter().map(|item| item.id).collect::<Vec<_>>(), vec![3, 2]);
+        assert_eq!(
+            captured.iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![3, 2]
+        );
     }
 }
