@@ -203,6 +203,7 @@ mod tests {
                 name: "X-Debug".into(),
                 value: "1".into(),
             }],
+            response_actions: vec![crate::rules::ResponseRewriteAction::SetStatus { value: 503 }],
         }];
         let command = ClientCommand::ReplaceRewriteRules {
             rules: rules.clone(),
@@ -210,12 +211,20 @@ mod tests {
         let json = serde_json::to_string(&command).unwrap();
         let decoded: ClientCommand = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, command);
+        assert!(json.contains("response_actions"));
 
         let event = handle_command(command, &EngineStatus::default(), &[], &rules);
         let EngineEvent::RewriteRules { rules: echoed } = event else {
             panic!("expected rewrite rule event");
         };
         assert_eq!(echoed, rules);
+    }
+
+    #[test]
+    fn legacy_rule_json_defaults_response_actions() {
+        let json = r#"{"id":"legacy","enabled":true,"host_contains":null,"path_prefix":null,"actions":[]}"#;
+        let rule: RewriteRule = serde_json::from_str(json).unwrap();
+        assert!(rule.response_actions.is_empty());
     }
 
     #[test]
