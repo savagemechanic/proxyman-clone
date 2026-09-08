@@ -1,18 +1,27 @@
 mod certificates;
+mod session;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::Context;
 use certificates::CertificateAuthority;
 use proxy_core::{
-    ClientCommand, EngineStatus, ProxyState, handle_command,
+    CapturedTransaction, ClientCommand, EngineStatus, HeaderField, ProxyState, TransactionState,
+    handle_command,
     http::{
-        MAX_REQUEST_HEAD_BYTES, find_request_head_end, parse_request_head, rewrite_to_origin_form,
+        MAX_REQUEST_HEAD_BYTES, MAX_RESPONSE_HEAD_BYTES, content_length, find_request_head_end,
+        find_response_head_end, is_chunked, parse_request_head, parse_response_head,
+        upstream_request_head,
     },
 };
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName};
+use session::SessionStore;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, copy_bidirectional},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, copy},
     net::{TcpListener, TcpStream},
     sync::RwLock,
 };
@@ -26,6 +35,7 @@ const DEFAULT_PROXY_ADDR: &str = "127.0.0.1:8080";
 struct RuntimeConfig {
     tls_interception_enabled: bool,
     certificate_authority: Option<CertificateAuthority>,
+    session: SessionStore,
 }
 
 #[tokio::main]
@@ -56,9 +66,11 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    let session = SessionStore::default();
     let runtime = RuntimeConfig {
         tls_interception_enabled,
         certificate_authority,
+        session: session.clone(),
     };
 
     let control_listener = TcpListener::bind(&control_addr)
@@ -83,8 +95,9 @@ async fn main() -> anyhow::Result<()> {
             accepted = control_listener.accept() => {
                 let (stream, peer) = accepted?;
                 let status = Arc::clone(&status);
+                let session = session.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = serve_control_client(stream, status).await {
+                    if let Err(error) = serve_control_client(stream, status, session).await {
                         warn!(%peer, %error, "control client disconnected with error");
                     }
                 });
@@ -114,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
 async fn serve_control_client(
     stream: TcpStream,
     status: Arc<RwLock<EngineStatus>>,
+    session: SessionStore,
 ) -> anyhow::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -134,7 +148,8 @@ async fn serve_control_client(
         };
 
         let snapshot = status.read().await.clone();
-        let event = handle_command(command, &snapshot);
+        let transactions = session.list().await;
+        let event = handle_command(command, &snapshot, &transactions);
         writer
             .write_all(format!("{}\n", serde_json::to_string(&event)?).as_bytes())
             .await?;
@@ -148,7 +163,7 @@ async fn serve_proxy_client(
     status: Arc<RwLock<EngineStatus>>,
     runtime: RuntimeConfig,
 ) -> anyhow::Result<()> {
-    let buffered = match read_request_head(&mut downstream).await {
+    let buffered = match read_http_head(&mut downstream, HeadKind::Request).await {
         Ok(bytes) => bytes,
         Err(error) => {
             let _ = downstream
@@ -165,7 +180,7 @@ async fn serve_proxy_client(
     let parsed = parse_request_head(&buffered[..head_end])?;
     let upstream_addr = format!("{}:{}", parsed.destination.host, parsed.destination.port);
 
-    let mut upstream = match TcpStream::connect(&upstream_addr).await {
+    let upstream = match TcpStream::connect(&upstream_addr).await {
         Ok(stream) => stream,
         Err(error) => {
             let _ = downstream
@@ -177,19 +192,6 @@ async fn serve_proxy_client(
                 .with_context(|| format!("failed to connect upstream {upstream_addr}"));
         }
     };
-
-    {
-        let mut snapshot = status.write().await;
-        snapshot.captured_transactions = snapshot.captured_transactions.saturating_add(1);
-    }
-
-    info!(
-        method = %parsed.method,
-        target = %parsed.target,
-        upstream = %upstream_addr,
-        connect = parsed.destination.is_connect,
-        "captured transaction"
-    );
 
     if parsed.destination.is_connect {
         downstream
@@ -203,18 +205,40 @@ async fn serve_proxy_client(
                 .certificate_authority
                 .as_ref()
                 .context("TLS interception enabled without certificate authority")?;
-            return serve_intercepted_tls(downstream, upstream, &parsed.destination.host, ca).await;
+            return serve_intercepted_tls(
+                downstream,
+                upstream,
+                &parsed.destination.host,
+                ca,
+                status,
+                runtime.session,
+            )
+            .await;
         }
-    } else {
-        let rewritten_head = rewrite_to_origin_form(&buffered[..head_end], &parsed);
-        upstream.write_all(&rewritten_head).await?;
-        if buffered.len() > head_end {
-            upstream.write_all(&buffered[head_end..]).await?;
-        }
+
+        let id = begin_transaction(
+            &runtime.session,
+            &status,
+            "tunnel",
+            &parsed.destination.host,
+            &parsed,
+        )
+        .await;
+        runtime.session.complete(id, 200, Vec::new(), 0).await;
+        let mut upstream = upstream;
+        let _ = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await?;
+        return Ok(());
     }
 
-    let _ = copy_bidirectional(&mut downstream, &mut upstream).await?;
-    Ok(())
+    proxy_single_exchange(
+        downstream,
+        upstream,
+        "http",
+        Some(buffered),
+        status,
+        runtime.session,
+    )
+    .await
 }
 
 async fn serve_intercepted_tls(
@@ -222,6 +246,8 @@ async fn serve_intercepted_tls(
     upstream: TcpStream,
     host: &str,
     ca: &CertificateAuthority,
+    status: Arc<RwLock<EngineStatus>>,
+    session: SessionStore,
 ) -> anyhow::Result<()> {
     let identity = ca.identity_for_host(host).await?;
     let server_config = ServerConfig::builder()
@@ -232,7 +258,7 @@ async fn serve_intercepted_tls(
         )
         .context("failed to build downstream TLS configuration")?;
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
-    let mut downstream_tls = acceptor
+    let downstream_tls = acceptor
         .accept(downstream)
         .await
         .with_context(|| format!("downstream TLS handshake failed for {host}"))?;
@@ -245,34 +271,205 @@ async fn serve_intercepted_tls(
     let connector = TlsConnector::from(Arc::new(client_config));
     let server_name = ServerName::try_from(host.to_owned())
         .with_context(|| format!("invalid upstream TLS server name {host}"))?;
-    let mut upstream_tls = connector
+    let upstream_tls = connector
         .connect(server_name, upstream)
         .await
         .with_context(|| format!("upstream TLS handshake failed for {host}"))?;
 
     info!(%host, "TLS MITM session established");
-    let _ = copy_bidirectional(&mut downstream_tls, &mut upstream_tls).await?;
+    proxy_single_exchange(downstream_tls, upstream_tls, "https", None, status, session).await
+}
+
+async fn proxy_single_exchange<D, U>(
+    mut downstream: D,
+    mut upstream: U,
+    scheme: &str,
+    initial_request: Option<Vec<u8>>,
+    status: Arc<RwLock<EngineStatus>>,
+    session: SessionStore,
+) -> anyhow::Result<()>
+where
+    D: AsyncRead + AsyncWrite + Unpin,
+    U: AsyncRead + AsyncWrite + Unpin,
+{
+    let buffered = match initial_request {
+        Some(bytes) => bytes,
+        None => read_http_head(&mut downstream, HeadKind::Request).await?,
+    };
+    let head_end = find_request_head_end(&buffered)?
+        .context("request head unexpectedly incomplete after read")?;
+    let parsed = parse_request_head(&buffered[..head_end])?;
+
+    let id = begin_transaction(&session, &status, scheme, &parsed.destination.host, &parsed).await;
+    let request_body_length = content_length(&parsed.headers)?.unwrap_or(0);
+
+    if is_chunked(&parsed.headers) {
+        session.fail(id).await;
+        downstream
+            .write_all(
+                b"HTTP/1.1 501 Not Implemented\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await?;
+        anyhow::bail!("chunked request bodies are not supported by the capture path yet");
+    }
+
+    upstream.write_all(&upstream_request_head(&parsed)).await?;
+    let already_buffered = &buffered[head_end..];
+    let initial_body_bytes = already_buffered.len().min(request_body_length as usize);
+    if initial_body_bytes > 0 {
+        upstream
+            .write_all(&already_buffered[..initial_body_bytes])
+            .await?;
+    }
+    copy_exact_remaining(
+        &mut downstream,
+        &mut upstream,
+        request_body_length.saturating_sub(initial_body_bytes as u64),
+    )
+    .await?;
+    upstream.flush().await?;
+
+    let response_buffer = match read_http_head(&mut upstream, HeadKind::Response).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            session.fail(id).await;
+            return Err(error);
+        }
+    };
+    let response_head_end = find_response_head_end(&response_buffer)?
+        .context("response head unexpectedly incomplete after read")?;
+    let response = parse_response_head(&response_buffer[..response_head_end])?;
+
+    downstream.write_all(&response_buffer).await?;
+    let buffered_response_body = (response_buffer.len() - response_head_end) as u64;
+    let remaining_response_body = copy(&mut upstream, &mut downstream).await?;
+    downstream.flush().await?;
+
+    session
+        .complete(
+            id,
+            response.status_code,
+            header_fields(&response.headers),
+            buffered_response_body.saturating_add(remaining_response_body),
+        )
+        .await;
+
+    info!(
+        transaction_id = id,
+        scheme,
+        method = %parsed.method,
+        host = %parsed.destination.host,
+        status = response.status_code,
+        "captured HTTP exchange"
+    );
     Ok(())
 }
 
-async fn read_request_head(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
+async fn begin_transaction(
+    session: &SessionStore,
+    status: &Arc<RwLock<EngineStatus>>,
+    scheme: &str,
+    host: &str,
+    parsed: &proxy_core::http::ParsedRequestHead,
+) -> u64 {
+    let id = session.next_id();
+    let request_body_bytes = content_length(&parsed.headers).ok().flatten().unwrap_or(0);
+    session
+        .insert(CapturedTransaction {
+            id,
+            started_at_unix_ms: unix_time_ms(),
+            scheme: scheme.to_owned(),
+            host: host.to_owned(),
+            method: parsed.method.clone(),
+            target: parsed.destination.origin_form_target.clone(),
+            request_headers: header_fields(&parsed.headers),
+            request_body_bytes,
+            status_code: None,
+            response_headers: Vec::new(),
+            response_body_bytes: 0,
+            state: TransactionState::Pending,
+        })
+        .await;
+    let mut engine_status = status.write().await;
+    engine_status.captured_transactions = engine_status.captured_transactions.saturating_add(1);
+    id
+}
+
+fn header_fields(headers: &[(String, String)]) -> Vec<HeaderField> {
+    headers
+        .iter()
+        .map(|(name, value)| HeaderField {
+            name: name.clone(),
+            value: value.clone(),
+        })
+        .collect()
+}
+
+async fn copy_exact_remaining<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    mut remaining: u64,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buffer = [0_u8; 16 * 1024];
+    while remaining > 0 {
+        let wanted = remaining.min(buffer.len() as u64) as usize;
+        let read = reader.read(&mut buffer[..wanted]).await?;
+        if read == 0 {
+            anyhow::bail!("connection closed before declared request body completed");
+        }
+        writer.write_all(&buffer[..read]).await?;
+        remaining -= read as u64;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum HeadKind {
+    Request,
+    Response,
+}
+
+async fn read_http_head<S>(stream: &mut S, kind: HeadKind) -> anyhow::Result<Vec<u8>>
+where
+    S: AsyncRead + Unpin,
+{
+    let limit = match kind {
+        HeadKind::Request => MAX_REQUEST_HEAD_BYTES,
+        HeadKind::Response => MAX_RESPONSE_HEAD_BYTES,
+    };
     let mut bytes = Vec::with_capacity(4096);
     let mut chunk = [0_u8; 4096];
 
     loop {
-        if find_request_head_end(&bytes)?.is_some() {
+        let complete = match kind {
+            HeadKind::Request => find_request_head_end(&bytes)?,
+            HeadKind::Response => find_response_head_end(&bytes)?,
+        };
+        if complete.is_some() {
             return Ok(bytes);
         }
-        if bytes.len() >= MAX_REQUEST_HEAD_BYTES {
-            anyhow::bail!("request head exceeded {} bytes", MAX_REQUEST_HEAD_BYTES);
+        if bytes.len() >= limit {
+            anyhow::bail!("HTTP head exceeded {limit} bytes");
         }
 
         let read = stream.read(&mut chunk).await?;
         if read == 0 {
-            anyhow::bail!("connection closed before request head completed");
+            anyhow::bail!("connection closed before HTTP head completed");
         }
         bytes.extend_from_slice(&chunk[..read]);
     }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 
 fn env_flag(name: &str) -> bool {
