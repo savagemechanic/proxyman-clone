@@ -9,6 +9,17 @@ use crate::rules::RewriteRule;
 pub const PROTOCOL_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposedRequest {
+    pub scheme: String,
+    pub host: String,
+    pub port: Option<u16>,
+    pub method: String,
+    pub target: String,
+    pub headers: Vec<HeaderField>,
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientCommand {
     Ping,
@@ -17,6 +28,7 @@ pub enum ClientCommand {
     ListRewriteRules,
     ReplaceRewriteRules { rules: Vec<RewriteRule> },
     ReplayTransaction { id: u64 },
+    ExecuteRequest { request: ComposedRequest },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +48,9 @@ pub enum EngineEvent {
     },
     ReplayResult {
         source_transaction_id: u64,
+        transaction: CapturedTransaction,
+    },
+    ExecutionResult {
         transaction: CapturedTransaction,
     },
     Error {
@@ -139,10 +154,12 @@ pub fn handle_command(
             rules: rewrite_rules.to_vec(),
         },
         ClientCommand::ReplaceRewriteRules { rules } => EngineEvent::RewriteRules { rules },
-        ClientCommand::ReplayTransaction { .. } => EngineEvent::Error {
-            code: "runtime_command_required".into(),
-            message: "replay_transaction must be handled by the running proxy daemon".into(),
-        },
+        ClientCommand::ReplayTransaction { .. } | ClientCommand::ExecuteRequest { .. } => {
+            EngineEvent::Error {
+                code: "runtime_command_required".into(),
+                message: "command must be handled by the running proxy daemon".into(),
+            }
+        }
     }
 }
 
@@ -168,12 +185,35 @@ mod tests {
     }
 
     #[test]
+    fn execute_request_round_trip_is_stable_json() {
+        let command = ClientCommand::ExecuteRequest {
+            request: ComposedRequest {
+                scheme: "https".into(),
+                host: "example.com".into(),
+                port: None,
+                method: "POST".into(),
+                target: "/v1/test".into(),
+                headers: vec![HeaderField {
+                    name: "Content-Type".into(),
+                    value: "application/json".into(),
+                }],
+                body: Some("{\"ok\":true}".into()),
+            },
+        };
+        let json = serde_json::to_string(&command).unwrap();
+        assert!(json.contains(r#""type":"execute_request""#));
+        assert!(json.contains(r#""scheme":"https""#));
+        let decoded: ClientCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, command);
+    }
+
+    #[test]
     fn status_event_uses_versioned_envelope() {
         let event = handle_command(ClientCommand::GetStatus, &EngineStatus::default(), &[], &[]);
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"status""#));
         assert!(json.contains(r#""protocol_version":1"#));
-        assert!(json.contains(r#""tls_interception_enabled":false"#));
+        assert!(json.contains(r#""tls_interception_enabled":false""#));
     }
 
     #[test]
@@ -240,28 +280,24 @@ mod tests {
 
     #[test]
     fn replay_result_round_trips() {
-        let transaction = CapturedTransaction {
-            id: 9,
-            started_at_unix_ms: 1,
-            scheme: "https".into(),
-            host: "example.com".into(),
-            method: "GET".into(),
-            target: "/".into(),
-            request_headers: Vec::new(),
-            request_body_bytes: 0,
-            request_body_preview: None,
-            status_code: Some(200),
-            response_headers: Vec::new(),
-            response_body_bytes: 0,
-            response_body_preview: None,
-            state: TransactionState::Complete,
-        };
+        let transaction = sample_transaction(9);
         let event = EngineEvent::ReplayResult {
             source_transaction_id: 4,
-            transaction: transaction.clone(),
+            transaction,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"replay_result""#));
+        let decoded: EngineEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn execution_result_round_trips() {
+        let event = EngineEvent::ExecutionResult {
+            transaction: sample_transaction(10),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"execution_result""#));
         let decoded: EngineEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, event);
     }
@@ -280,5 +316,24 @@ mod tests {
         assert_eq!(status.proxy_state, ProxyState::Stopped);
         assert_eq!(status.captured_transactions, 0);
         assert!(!status.tls_interception_enabled);
+    }
+
+    fn sample_transaction(id: u64) -> CapturedTransaction {
+        CapturedTransaction {
+            id,
+            started_at_unix_ms: 1,
+            scheme: "https".into(),
+            host: "example.com".into(),
+            method: "GET".into(),
+            target: "/".into(),
+            request_headers: Vec::new(),
+            request_body_bytes: 0,
+            request_body_preview: None,
+            status_code: Some(200),
+            response_headers: Vec::new(),
+            response_body_bytes: 0,
+            response_body_preview: None,
+            state: TransactionState::Complete,
+        }
     }
 }
