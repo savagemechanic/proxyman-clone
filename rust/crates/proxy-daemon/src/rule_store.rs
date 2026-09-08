@@ -29,7 +29,10 @@ impl fmt::Display for RuleStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooLarge { actual, maximum } => {
-                write!(f, "rule store is too large ({actual} bytes; maximum {maximum})")
+                write!(
+                    f,
+                    "rule store is too large ({actual} bytes; maximum {maximum})"
+                )
             }
             Self::UnsupportedVersion(version) => {
                 write!(f, "unsupported rule store version {version}")
