@@ -239,7 +239,8 @@ pub fn upstream_request_head(parsed: &ParsedRequestHead) -> Vec<u8> {
     .into_bytes();
 
     for (name, value) in &parsed.headers {
-        if name.eq_ignore_ascii_case("connection") || name.eq_ignore_ascii_case("proxy-connection") {
+        if name.eq_ignore_ascii_case("connection") || name.eq_ignore_ascii_case("proxy-connection")
+        {
             continue;
         }
         bytes.extend_from_slice(name.as_bytes());
