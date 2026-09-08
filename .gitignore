@@ -1,0 +1,18 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Rust
+/target/
+**/target/
+Cargo.lock
+
+# Swift
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Local runtime state
+.runtime/
+*.log
