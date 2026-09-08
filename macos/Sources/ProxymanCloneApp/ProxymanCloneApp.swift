@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import ProxymanCloneKit
 
@@ -12,12 +13,31 @@ struct ProxymanCloneApp: App {
     }
 }
 
+private enum TrafficFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case http = "HTTP"
+    case https = "HTTPS"
+    case success = "2xx"
+    case clientError = "4xx"
+    case serverError = "5xx"
+
+    var id: Self { self }
+}
+
 struct ContentView: View {
     @State private var statusText = "Engine disconnected"
     @State private var tlsText = "TLS interception unknown"
     @State private var transactions: [CapturedTransaction] = []
     @State private var selectedID: UInt64?
     @State private var isChecking = false
+    @State private var searchText = ""
+    @State private var trafficFilter: TrafficFilter = .all
+
+    private var filteredTransactions: [CapturedTransaction] {
+        transactions.filter { transaction in
+            matchesFilter(transaction) && matchesSearch(transaction)
+        }
+    }
 
     private var selectedTransaction: CapturedTransaction? {
         transactions.first { $0.id == selectedID }
@@ -31,8 +51,13 @@ struct ContentView: View {
             }
             .navigationTitle("Proxyman Clone")
         } content: {
-            trafficList
-                .navigationTitle("Traffic")
+            VStack(spacing: 0) {
+                filterBar
+                Divider()
+                trafficList
+            }
+            .navigationTitle("Traffic")
+            .searchable(text: $searchText, prompt: "Method, host, path, status")
         } detail: {
             inspector
                 .navigationTitle("Inspector")
@@ -56,6 +81,16 @@ struct ContentView: View {
         }
     }
 
+    private var filterBar: some View {
+        Picker("Traffic filter", selection: $trafficFilter) {
+            ForEach(TrafficFilter.allCases) { filter in
+                Text(filter.rawValue).tag(filter)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(10)
+    }
+
     @ViewBuilder
     private var trafficList: some View {
         if transactions.isEmpty {
@@ -64,8 +99,10 @@ struct ContentView: View {
                 systemImage: "network",
                 description: Text("Run the proxy engine, configure a client to use it, then make a request.")
             )
+        } else if filteredTransactions.isEmpty {
+            ContentUnavailableView.search(text: searchText.isEmpty ? trafficFilter.rawValue : searchText)
         } else {
-            List(transactions, selection: $selectedID) { transaction in
+            List(filteredTransactions, selection: $selectedID) { transaction in
                 HStack(spacing: 10) {
                     Text(transaction.method)
                         .font(.system(.caption, design: .monospaced).weight(.semibold))
@@ -105,7 +142,9 @@ struct ContentView: View {
 
                     Divider()
                     metadataSection(transaction)
+                    bodySection("Request Body", preview: transaction.requestBodyPreview)
                     headerSection("Request Headers", headers: transaction.requestHeaders)
+                    bodySection("Response Body", preview: transaction.responseBodyPreview)
                     headerSection("Response Headers", headers: transaction.responseHeaders)
                 }
                 .padding(20)
@@ -126,12 +165,62 @@ struct ContentView: View {
 
     private func metadataSection(_ transaction: CapturedTransaction) -> some View {
         Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
-            GridRow { Text("Status").foregroundStyle(.secondary); Text(transaction.statusCode.map(String.init) ?? transaction.state) }
-            GridRow { Text("Host").foregroundStyle(.secondary); Text(transaction.host).textSelection(.enabled) }
-            GridRow { Text("Scheme").foregroundStyle(.secondary); Text(transaction.scheme.uppercased()) }
-            GridRow { Text("Request body").foregroundStyle(.secondary); Text("\(transaction.requestBodyBytes) bytes") }
-            GridRow { Text("Response body").foregroundStyle(.secondary); Text("\(transaction.responseBodyBytes) bytes") }
-            GridRow { Text("Transaction ID").foregroundStyle(.secondary); Text(String(transaction.id)).textSelection(.enabled) }
+            GridRow {
+                Text("Status").foregroundStyle(.secondary)
+                Text(transaction.statusCode.map(String.init) ?? transaction.state)
+            }
+            GridRow {
+                Text("Host").foregroundStyle(.secondary)
+                Text(transaction.host).textSelection(.enabled)
+            }
+            GridRow {
+                Text("Scheme").foregroundStyle(.secondary)
+                Text(transaction.scheme.uppercased())
+            }
+            GridRow {
+                Text("Request body").foregroundStyle(.secondary)
+                Text("\(transaction.requestBodyBytes) bytes")
+            }
+            GridRow {
+                Text("Response body").foregroundStyle(.secondary)
+                Text("\(transaction.responseBodyBytes) bytes")
+            }
+            GridRow {
+                Text("Transaction ID").foregroundStyle(.secondary)
+                Text(String(transaction.id)).textSelection(.enabled)
+            }
+        }
+    }
+
+    private func bodySection(_ title: String, preview: BodyPreview?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                if let preview {
+                    Text(bodySummary(preview))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let preview, let text = displayBody(preview) {
+                ScrollView(.horizontal) {
+                    Text(text)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                }
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+            } else if let preview, preview.totalBytes > 0 {
+                Text("Binary or non-UTF-8 body preview · \(preview.contentType ?? "unknown content type")")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Empty")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -154,6 +243,55 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func bodySummary(_ preview: BodyPreview) -> String {
+        let type = preview.contentType?.split(separator: ";").first.map(String.init) ?? "unknown"
+        if preview.truncated {
+            return "\(type) · \(preview.capturedBytes)/\(preview.totalBytes) bytes shown"
+        }
+        return "\(type) · \(preview.totalBytes) bytes"
+    }
+
+    private func displayBody(_ preview: BodyPreview) -> String? {
+        guard let text = preview.text else { return nil }
+        guard preview.contentType?.localizedCaseInsensitiveContains("json") == true,
+              let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              JSONSerialization.isValidJSONObject(object),
+              let prettyData = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let pretty = String(data: prettyData, encoding: .utf8)
+        else {
+            return text
+        }
+        return pretty
+    }
+
+    private func matchesSearch(_ transaction: CapturedTransaction) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return true }
+        let status = transaction.statusCode.map(String.init) ?? transaction.state
+        return transaction.method.localizedCaseInsensitiveContains(query)
+            || transaction.host.localizedCaseInsensitiveContains(query)
+            || transaction.target.localizedCaseInsensitiveContains(query)
+            || status.localizedCaseInsensitiveContains(query)
+    }
+
+    private func matchesFilter(_ transaction: CapturedTransaction) -> Bool {
+        switch trafficFilter {
+        case .all:
+            true
+        case .http:
+            transaction.scheme == "http"
+        case .https:
+            transaction.scheme == "https"
+        case .success:
+            transaction.statusCode.map { (200..<300).contains(Int($0)) } ?? false
+        case .clientError:
+            transaction.statusCode.map { (400..<500).contains(Int($0)) } ?? false
+        case .serverError:
+            transaction.statusCode.map { (500..<600).contains(Int($0)) } ?? false
         }
     }
 
