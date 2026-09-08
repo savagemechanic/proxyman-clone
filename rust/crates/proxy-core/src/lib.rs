@@ -16,6 +16,7 @@ pub enum ClientCommand {
     ListTransactions { limit: Option<usize> },
     ListRewriteRules,
     ReplaceRewriteRules { rules: Vec<RewriteRule> },
+    ReplayTransaction { id: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +33,10 @@ pub enum EngineEvent {
     },
     RewriteRules {
         rules: Vec<RewriteRule>,
+    },
+    ReplayResult {
+        source_transaction_id: u64,
+        transaction: CapturedTransaction,
     },
     Error {
         code: String,
@@ -134,6 +139,10 @@ pub fn handle_command(
             rules: rewrite_rules.to_vec(),
         },
         ClientCommand::ReplaceRewriteRules { rules } => EngineEvent::RewriteRules { rules },
+        ClientCommand::ReplayTransaction { .. } => EngineEvent::Error {
+            code: "runtime_command_required".into(),
+            message: "replay_transaction must be handled by the running proxy daemon".into(),
+        },
     }
 }
 
@@ -147,6 +156,15 @@ mod tests {
         assert_eq!(json, r#"{"type":"get_status"}"#);
         let decoded: ClientCommand = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, ClientCommand::GetStatus);
+    }
+
+    #[test]
+    fn replay_command_round_trip_is_stable_json() {
+        let command = ClientCommand::ReplayTransaction { id: 42 };
+        let json = serde_json::to_string(&command).unwrap();
+        assert_eq!(json, r#"{"type":"replay_transaction","id":42}"#);
+        let decoded: ClientCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, command);
     }
 
     #[test]
@@ -218,6 +236,34 @@ mod tests {
             panic!("expected rewrite rule event");
         };
         assert_eq!(echoed, rules);
+    }
+
+    #[test]
+    fn replay_result_round_trips() {
+        let transaction = CapturedTransaction {
+            id: 9,
+            started_at_unix_ms: 1,
+            scheme: "https".into(),
+            host: "example.com".into(),
+            method: "GET".into(),
+            target: "/".into(),
+            request_headers: Vec::new(),
+            request_body_bytes: 0,
+            request_body_preview: None,
+            status_code: Some(200),
+            response_headers: Vec::new(),
+            response_body_bytes: 0,
+            response_body_preview: None,
+            state: TransactionState::Complete,
+        };
+        let event = EngineEvent::ReplayResult {
+            source_transaction_id: 4,
+            transaction: transaction.clone(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"replay_result""#));
+        let decoded: EngineEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
     }
 
     #[test]
