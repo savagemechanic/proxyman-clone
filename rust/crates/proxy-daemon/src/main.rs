@@ -205,7 +205,15 @@ async fn serve_proxy_client(
                 .certificate_authority
                 .as_ref()
                 .context("TLS interception enabled without certificate authority")?;
-            return serve_intercepted_tls(downstream, upstream, &parsed.destination.host, ca, status, runtime.session).await;
+            return serve_intercepted_tls(
+                downstream,
+                upstream,
+                &parsed.destination.host,
+                ca,
+                status,
+                runtime.session,
+            )
+            .await;
         }
 
         let id = begin_transaction(
@@ -216,10 +224,7 @@ async fn serve_proxy_client(
             &parsed,
         )
         .await;
-        runtime
-            .session
-            .complete(id, 200, Vec::new(), 0)
-            .await;
+        runtime.session.complete(id, 200, Vec::new(), 0).await;
         let mut upstream = upstream;
         let _ = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await?;
         return Ok(());
