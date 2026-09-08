@@ -54,8 +54,7 @@ pub async fn replay_transaction(
         Some(transaction) => {
             info!(
                 transaction_id = replayed_id,
-                source_transaction_id,
-                "replayed captured HTTP request"
+                source_transaction_id, "replayed captured HTTP request"
             );
             EngineEvent::ReplayResult {
                 source_transaction_id,
