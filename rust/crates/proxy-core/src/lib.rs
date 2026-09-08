@@ -21,11 +21,22 @@ pub enum ClientCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
-    Pong { protocol_version: u16 },
-    Status { status: EngineStatus },
-    Transactions { transactions: Vec<CapturedTransaction> },
-    RewriteRules { rules: Vec<RewriteRule> },
-    Error { code: String, message: String },
+    Pong {
+        protocol_version: u16,
+    },
+    Status {
+        status: EngineStatus,
+    },
+    Transactions {
+        transactions: Vec<CapturedTransaction>,
+    },
+    RewriteRules {
+        rules: Vec<RewriteRule>,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,14 +62,27 @@ impl Default for EngineStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProxyState { Stopped, Starting, Running, Stopping, Failed }
+pub enum ProxyState {
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+    Failed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TransactionState { Pending, Complete, Failed }
+pub enum TransactionState {
+    Pending,
+    Complete,
+    Failed,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HeaderField { pub name: String, pub value: String }
+pub struct HeaderField {
+    pub name: String,
+    pub value: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BodyPreview {
@@ -87,15 +111,28 @@ pub struct CapturedTransaction {
     pub state: TransactionState,
 }
 
-pub fn handle_command(command: ClientCommand, status: &EngineStatus, transactions: &[CapturedTransaction], rewrite_rules: &[RewriteRule]) -> EngineEvent {
+pub fn handle_command(
+    command: ClientCommand,
+    status: &EngineStatus,
+    transactions: &[CapturedTransaction],
+    rewrite_rules: &[RewriteRule],
+) -> EngineEvent {
     match command {
-        ClientCommand::Ping => EngineEvent::Pong { protocol_version: PROTOCOL_VERSION },
-        ClientCommand::GetStatus => EngineEvent::Status { status: status.clone() },
+        ClientCommand::Ping => EngineEvent::Pong {
+            protocol_version: PROTOCOL_VERSION,
+        },
+        ClientCommand::GetStatus => EngineEvent::Status {
+            status: status.clone(),
+        },
         ClientCommand::ListTransactions { limit } => {
             let limit = limit.unwrap_or(250).min(1000);
-            EngineEvent::Transactions { transactions: transactions.iter().take(limit).cloned().collect() }
+            EngineEvent::Transactions {
+                transactions: transactions.iter().take(limit).cloned().collect(),
+            }
         }
-        ClientCommand::ListRewriteRules => EngineEvent::RewriteRules { rules: rewrite_rules.to_vec() },
+        ClientCommand::ListRewriteRules => EngineEvent::RewriteRules {
+            rules: rewrite_rules.to_vec(),
+        },
         ClientCommand::ReplaceRewriteRules { rules } => EngineEvent::RewriteRules { rules },
     }
 }
@@ -123,24 +160,34 @@ mod tests {
 
     #[test]
     fn list_transactions_applies_limit() {
-        let transactions = (1..=3).map(|id| CapturedTransaction {
-            id,
-            started_at_unix_ms: id,
-            scheme: "https".into(),
-            host: "example.com".into(),
-            method: "GET".into(),
-            target: "/".into(),
-            request_headers: Vec::new(),
-            request_body_bytes: 0,
-            request_body_preview: None,
-            status_code: Some(200),
-            response_headers: Vec::new(),
-            response_body_bytes: 0,
-            response_body_preview: None,
-            state: TransactionState::Complete,
-        }).collect::<Vec<_>>();
-        let event = handle_command(ClientCommand::ListTransactions { limit: Some(2) }, &EngineStatus::default(), &transactions, &[]);
-        let EngineEvent::Transactions { transactions } = event else { panic!("expected transaction list"); };
+        let transactions = (1..=3)
+            .map(|id| CapturedTransaction {
+                id,
+                started_at_unix_ms: id,
+                scheme: "https".into(),
+                host: "example.com".into(),
+                method: "GET".into(),
+                target: "/".into(),
+                request_headers: Vec::new(),
+                request_body_bytes: 0,
+                request_body_preview: None,
+                status_code: Some(200),
+                response_headers: Vec::new(),
+                response_body_bytes: 0,
+                response_body_preview: None,
+                state: TransactionState::Complete,
+            })
+            .collect::<Vec<_>>();
+
+        let event = handle_command(
+            ClientCommand::ListTransactions { limit: Some(2) },
+            &EngineStatus::default(),
+            &transactions,
+            &[],
+        );
+        let EngineEvent::Transactions { transactions } = event else {
+            panic!("expected transaction list");
+        };
         assert_eq!(transactions.len(), 2);
         assert_eq!(transactions[0].id, 1);
     }
@@ -152,21 +199,29 @@ mod tests {
             enabled: true,
             host_contains: Some("example.com".into()),
             path_prefix: None,
-            actions: vec![crate::rules::RewriteAction::SetHeader { name: "X-Debug".into(), value: "1".into() }],
+            actions: vec![crate::rules::RewriteAction::SetHeader {
+                name: "X-Debug".into(),
+                value: "1".into(),
+            }],
             response_actions: vec![crate::rules::ResponseRewriteAction::SetStatus { value: 503 }],
         }];
-        let command = ClientCommand::ReplaceRewriteRules { rules: rules.clone() };
+        let command = ClientCommand::ReplaceRewriteRules {
+            rules: rules.clone(),
+        };
         let json = serde_json::to_string(&command).unwrap();
         let decoded: ClientCommand = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, command);
         assert!(json.contains("response_actions"));
+
         let event = handle_command(command, &EngineStatus::default(), &[], &rules);
-        let EngineEvent::RewriteRules { rules: echoed } = event else { panic!("expected rewrite rule event"); };
+        let EngineEvent::RewriteRules { rules: echoed } = event else {
+            panic!("expected rewrite rule event");
+        };
         assert_eq!(echoed, rules);
     }
 
     #[test]
-    fn old_rule_json_defaults_response_actions() {
+    fn legacy_rule_json_defaults_response_actions() {
         let json = r#"{"id":"legacy","enabled":true,"host_contains":null,"path_prefix":null,"actions":[]}"#;
         let rule: RewriteRule = serde_json::from_str(json).unwrap();
         assert!(rule.response_actions.is_empty());
