@@ -48,3 +48,19 @@ import Testing
     let decoded = try JSONDecoder().decode(RewriteRule.self, from: data)
     #expect(decoded == rule)
 }
+
+@Test func disabledRewriteRulePreservesEnabledState() throws {
+    let rule = RewriteRule(
+        id: "disabled-rule",
+        enabled: false,
+        hostContains: nil,
+        pathPrefix: "/internal",
+        actions: [.removeHeader("X-Internal")]
+    )
+
+    let data = try JSONEncoder().encode(rule)
+    let decoded = try JSONDecoder().decode(RewriteRule.self, from: data)
+
+    #expect(decoded.enabled == false)
+    #expect(decoded == rule)
+}
