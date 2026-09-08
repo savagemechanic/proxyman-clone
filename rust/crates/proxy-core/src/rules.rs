@@ -243,6 +243,30 @@ fn reason_phrase(status: u16) -> &'static str {
     }
 }
 
+pub(crate) fn safe_set_header(
+    headers: &mut Vec<(String, String)>,
+    name: &str,
+    value: &str,
+) -> bool {
+    set_header(headers, name, value)
+}
+
+pub(crate) fn safe_remove_header(headers: &mut Vec<(String, String)>, name: &str) -> bool {
+    remove_header(headers, name)
+}
+
+pub(crate) fn safe_normalize_path(value: &str) -> Option<String> {
+    normalize_path(value)
+}
+
+pub(crate) fn safe_status_override(status: u16) -> Option<&'static str> {
+    valid_status_override(status).then(|| reason_phrase(status))
+}
+
+pub(crate) fn valid_safe_header_edit(name: &str, value: Option<&str>) -> bool {
+    valid_rewrite_header_name(name) && value.is_none_or(valid_header_value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
