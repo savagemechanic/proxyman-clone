@@ -42,7 +42,18 @@ pub async fn execute(
             .with_context(|| format!("failed to connect upstream {host}:{port}"))?;
 
         match scheme {
-            "http" => execute_over_stream(upstream, parsed, body, id, session, rewrite_rules).await,
+            "http" => {
+                execute_over_stream(
+                    upstream,
+                    scheme,
+                    parsed,
+                    body,
+                    id,
+                    session,
+                    rewrite_rules,
+                )
+                .await
+            }
             "https" => {
                 let mut roots = RootCertStore::empty();
                 roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -56,7 +67,16 @@ pub async fn execute(
                     .connect(server_name, upstream)
                     .await
                     .with_context(|| format!("TLS handshake failed for {host}"))?;
-                execute_over_stream(upstream_tls, parsed, body, id, session, rewrite_rules).await
+                execute_over_stream(
+                    upstream_tls,
+                    scheme,
+                    parsed,
+                    body,
+                    id,
+                    session,
+                    rewrite_rules,
+                )
+                .await
             }
             _ => anyhow::bail!("unsupported request scheme after validation"),
         }
@@ -73,6 +93,7 @@ pub async fn execute(
 
 async fn execute_over_stream<S>(
     mut upstream: S,
+    scheme: &str,
     parsed: &ParsedRequestHead,
     body: &[u8],
     id: u64,
@@ -111,7 +132,7 @@ where
 
     info!(
         transaction_id = id,
-        scheme = %if parsed.destination.port == 443 { "https" } else { "http" },
+        scheme,
         host = %parsed.destination.host,
         status = response.status_code,
         response_rewrite_rules_applied = applied_response_rules.len(),
