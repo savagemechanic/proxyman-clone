@@ -25,3 +25,42 @@ import Testing
     #expect(transaction.responseBodyPreview?.totalBytes == 42)
     #expect(transaction.responseHeaders.first?.name == "Content-Type")
 }
+
+@Test func rewriteRuleRoundTripsThroughJSON() throws {
+    let rule = RewriteRule(
+        id: "api-debug",
+        hostContains: "example.com",
+        pathPrefix: "/v1",
+        actions: [
+            .setPath("/v2/users"),
+            .setHeader(name: "X-Debug", value: "1"),
+            .removeHeader("Authorization")
+        ]
+    )
+
+    let data = try JSONEncoder().encode(rule)
+    let json = try #require(String(data: data, encoding: .utf8))
+    #expect(json.contains(#""host_contains":"example.com""#))
+    #expect(json.contains(#""type":"set_path""#))
+    #expect(json.contains(#""type":"set_header""#))
+    #expect(json.contains(#""type":"remove_header""#))
+
+    let decoded = try JSONDecoder().decode(RewriteRule.self, from: data)
+    #expect(decoded == rule)
+}
+
+@Test func disabledRewriteRulePreservesEnabledState() throws {
+    let rule = RewriteRule(
+        id: "disabled-rule",
+        enabled: false,
+        hostContains: nil,
+        pathPrefix: "/internal",
+        actions: [.removeHeader("X-Internal")]
+    )
+
+    let data = try JSONEncoder().encode(rule)
+    let decoded = try JSONDecoder().decode(RewriteRule.self, from: data)
+
+    #expect(decoded.enabled == false)
+    #expect(decoded == rule)
+}
