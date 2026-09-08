@@ -43,16 +43,8 @@ pub async fn execute(
 
         match scheme {
             "http" => {
-                execute_over_stream(
-                    upstream,
-                    scheme,
-                    parsed,
-                    body,
-                    id,
-                    session,
-                    rewrite_rules,
-                )
-                .await
+                execute_over_stream(upstream, scheme, parsed, body, id, session, rewrite_rules)
+                    .await
             }
             "https" => {
                 let mut roots = RootCertStore::empty();
