@@ -67,6 +67,12 @@ struct ContentView: View {
                 Text(statusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button {
+                    statusText = HARExportPanel.export(transactions: transactions)
+                } label: {
+                    Label("Export HAR", systemImage: "square.and.arrow.up")
+                }
+                .disabled(transactions.isEmpty)
                 Button(action: refresh) {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
