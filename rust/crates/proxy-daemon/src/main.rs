@@ -5,13 +5,14 @@ use std::{path::PathBuf, sync::Arc};
 use anyhow::Context;
 use certificates::CertificateAuthority;
 use proxy_core::{
-    handle_command,
-    http::{find_request_head_end, parse_request_head, rewrite_to_origin_form, MAX_REQUEST_HEAD_BYTES},
-    ClientCommand, EngineStatus, ProxyState,
+    ClientCommand, EngineStatus, ProxyState, handle_command,
+    http::{
+        MAX_REQUEST_HEAD_BYTES, find_request_head_end, parse_request_head, rewrite_to_origin_form,
+    },
 };
-use rustls::{pki_types::ServerName, ClientConfig, RootCertStore, ServerConfig};
+use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName};
 use tokio::{
-    io::{copy_bidirectional, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, copy_bidirectional},
     net::{TcpListener, TcpStream},
     sync::RwLock,
 };
@@ -151,7 +152,9 @@ async fn serve_proxy_client(
         Ok(bytes) => bytes,
         Err(error) => {
             let _ = downstream
-                .write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )
                 .await;
             return Err(error);
         }
@@ -166,9 +169,12 @@ async fn serve_proxy_client(
         Ok(stream) => stream,
         Err(error) => {
             let _ = downstream
-                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )
                 .await;
-            return Err(error).with_context(|| format!("failed to connect upstream {upstream_addr}"));
+            return Err(error)
+                .with_context(|| format!("failed to connect upstream {upstream_addr}"));
         }
     };
 
@@ -187,7 +193,9 @@ async fn serve_proxy_client(
 
     if parsed.destination.is_connect {
         downstream
-            .write_all(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: proxyman-clone\r\n\r\n")
+            .write_all(
+                b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: proxyman-clone\r\n\r\n",
+            )
             .await?;
 
         if runtime.tls_interception_enabled {
@@ -218,7 +226,10 @@ async fn serve_intercepted_tls(
     let identity = ca.identity_for_host(host).await?;
     let server_config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(identity.cert_chain.clone(), identity.private_key.clone_key())
+        .with_single_cert(
+            identity.cert_chain.clone(),
+            identity.private_key.clone_key(),
+        )
         .context("failed to build downstream TLS configuration")?;
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let mut downstream_tls = acceptor
@@ -266,7 +277,12 @@ async fn read_request_head(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
 
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
