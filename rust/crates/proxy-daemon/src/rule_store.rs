@@ -1,5 +1,5 @@
 use std::{
-    io,
+    fmt, io,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -17,16 +17,41 @@ pub struct RuleStore {
     write_lock: Arc<Mutex<()>>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum RuleStoreError {
-    #[error("rule store is too large ({actual} bytes; maximum {maximum})")]
     TooLarge { actual: usize, maximum: usize },
-    #[error("unsupported rule store version {0}")]
     UnsupportedVersion(u16),
-    #[error("invalid rule store JSON: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("rule store I/O error: {0}")]
-    Io(#[from] io::Error),
+    Json(serde_json::Error),
+    Io(io::Error),
+}
+
+impl fmt::Display for RuleStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge { actual, maximum } => {
+                write!(f, "rule store is too large ({actual} bytes; maximum {maximum})")
+            }
+            Self::UnsupportedVersion(version) => {
+                write!(f, "unsupported rule store version {version}")
+            }
+            Self::Json(error) => write!(f, "invalid rule store JSON: {error}"),
+            Self::Io(error) => write!(f, "rule store I/O error: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for RuleStoreError {}
+
+impl From<serde_json::Error> for RuleStoreError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Json(value)
+    }
+}
+
+impl From<io::Error> for RuleStoreError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -127,7 +152,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("proxyman-clone-{name}-{}-{nonce}.json", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "proxyman-clone-{name}-{}-{nonce}.json",
+            std::process::id()
+        ))
     }
 
     fn sample_rule() -> RewriteRule {
@@ -190,7 +218,10 @@ mod tests {
             .await
             .unwrap();
         let store = RuleStore::new(path.clone());
-        assert!(matches!(store.load().await, Err(RuleStoreError::TooLarge { .. })));
+        assert!(matches!(
+            store.load().await,
+            Err(RuleStoreError::TooLarge { .. })
+        ));
         let _ = tokio::fs::remove_file(path).await;
     }
 }
