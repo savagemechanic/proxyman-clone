@@ -6,12 +6,14 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public let proxyState: String
     public let listenAddress: String?
     public let capturedTransactions: UInt64
+    public let tlsInterceptionEnabled: Bool
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
         case proxyState = "proxy_state"
         case listenAddress = "listen_address"
         case capturedTransactions = "captured_transactions"
+        case tlsInterceptionEnabled = "tls_interception_enabled"
     }
 }
 
