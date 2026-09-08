@@ -50,7 +50,9 @@ impl fmt::Display for ParseRequestError {
             Self::InvalidResponseLine => f.write_str("response status line is invalid"),
             Self::MissingHost => f.write_str("request does not identify an upstream host"),
             Self::InvalidPort => f.write_str("request contains an invalid port"),
-            Self::InvalidContentLength => f.write_str("HTTP message contains an invalid Content-Length"),
+            Self::InvalidContentLength => {
+                f.write_str("HTTP message contains an invalid Content-Length")
+            }
         }
     }
 }
@@ -229,6 +231,26 @@ pub fn rewrite_to_origin_form(head: &[u8], parsed: &ParsedRequestHead) -> Vec<u8
     rewritten
 }
 
+pub fn upstream_request_head(parsed: &ParsedRequestHead) -> Vec<u8> {
+    let mut bytes = format!(
+        "{} {} {}\r\n",
+        parsed.method, parsed.destination.origin_form_target, parsed.version
+    )
+    .into_bytes();
+
+    for (name, value) in &parsed.headers {
+        if name.eq_ignore_ascii_case("connection") || name.eq_ignore_ascii_case("proxy-connection") {
+            continue;
+        }
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.extend_from_slice(b": ");
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.extend_from_slice(b"\r\n");
+    }
+    bytes.extend_from_slice(b"Connection: close\r\n\r\n");
+    bytes
+}
+
 fn split_authority_and_path(value: &str) -> (&str, &str) {
     match value.find('/') {
         Some(index) => (&value[..index], &value[index..]),
@@ -320,6 +342,17 @@ mod tests {
     fn detects_chunked_transfer_encoding_case_insensitively() {
         let headers = vec![("Transfer-Encoding".into(), "gzip, Chunked".into())];
         assert!(is_chunked(&headers));
+    }
+
+    #[test]
+    fn upstream_head_uses_origin_form_and_forces_close() {
+        let bytes = b"GET http://example.com/test HTTP/1.1\r\nHost: example.com\r\nProxy-Connection: keep-alive\r\n\r\n";
+        let parsed = parse_request_head(bytes).unwrap();
+        let rewritten = upstream_request_head(&parsed);
+        let text = String::from_utf8(rewritten).unwrap();
+        assert!(text.starts_with("GET /test HTTP/1.1\r\n"));
+        assert!(text.contains("Connection: close\r\n"));
+        assert!(!text.to_ascii_lowercase().contains("proxy-connection"));
     }
 
     #[test]
