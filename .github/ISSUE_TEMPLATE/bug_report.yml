@@ -1,0 +1,45 @@
+name: Bug report
+description: Report reproducible incorrect behavior
+title: "Bug: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve Proxyman Clone. Remove secrets before attaching traffic data.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest authorized reproduction you can.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized diagnostics
+      description: Never include authorization headers, cookies, CA private keys, access tokens, or sensitive body contents.
+      render: shell
+  - type: checkboxes
+    id: authorization
+    attributes:
+      label: Authorization
+      options:
+        - label: I reproduced this only against systems/devices I own or am explicitly authorized to inspect.
+          required: true
