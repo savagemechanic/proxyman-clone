@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::http::ParsedRequestHead;
+use crate::http::{ParsedRequestHead, ParsedResponseHead};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RewriteRule {
@@ -9,12 +9,22 @@ pub struct RewriteRule {
     pub host_contains: Option<String>,
     pub path_prefix: Option<String>,
     pub actions: Vec<RewriteAction>,
+    #[serde(default)]
+    pub response_actions: Vec<ResponseRewriteAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RewriteAction {
     SetPath { value: String },
+    SetHeader { name: String, value: String },
+    RemoveHeader { name: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseRewriteAction {
+    SetStatus { value: u16 },
     SetHeader { name: String, value: String },
     RemoveHeader { name: String },
 }
@@ -60,7 +70,7 @@ pub fn apply_request_rules(request: &mut ParsedRequestHead, rules: &[RewriteRule
 
         let mut changed = false;
         for action in &rule.actions {
-            changed |= apply_action(request, action);
+            changed |= apply_request_action(request, action);
         }
         if changed {
             applied.push(rule.id.clone());
@@ -70,7 +80,31 @@ pub fn apply_request_rules(request: &mut ParsedRequestHead, rules: &[RewriteRule
     applied
 }
 
-fn apply_action(request: &mut ParsedRequestHead, action: &RewriteAction) -> bool {
+pub fn apply_response_rules(
+    request: &ParsedRequestHead,
+    response: &mut ParsedResponseHead,
+    rules: &[RewriteRule],
+) -> Vec<String> {
+    let mut applied = Vec::new();
+
+    for rule in rules {
+        if !rule.matches(request) {
+            continue;
+        }
+
+        let mut changed = false;
+        for action in &rule.response_actions {
+            changed |= apply_response_action(response, action);
+        }
+        if changed {
+            applied.push(rule.id.clone());
+        }
+    }
+
+    applied
+}
+
+fn apply_request_action(request: &mut ParsedRequestHead, action: &RewriteAction) -> bool {
     match action {
         RewriteAction::SetPath { value } => {
             let Some(value) = normalize_path(value) else {
@@ -80,27 +114,50 @@ fn apply_action(request: &mut ParsedRequestHead, action: &RewriteAction) -> bool
             request.destination.origin_form_target = value;
             true
         }
-        RewriteAction::SetHeader { name, value } => {
-            if !valid_header_name(name) || !valid_header_value(value) {
+        RewriteAction::SetHeader { name, value } => set_header(&mut request.headers, name, value),
+        RewriteAction::RemoveHeader { name } => remove_header(&mut request.headers, name),
+    }
+}
+
+fn apply_response_action(response: &mut ParsedResponseHead, action: &ResponseRewriteAction) -> bool {
+    match action {
+        ResponseRewriteAction::SetStatus { value } => {
+            if !(100..=599).contains(value) || response.status_code == *value {
                 return false;
             }
-            request
-                .headers
-                .retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
-            request.headers.push((name.clone(), value.clone()));
+            response.status_code = *value;
+            response.reason = reason_phrase(*value).to_owned();
             true
         }
-        RewriteAction::RemoveHeader { name } => {
-            if !valid_header_name(name) {
-                return false;
-            }
-            let before = request.headers.len();
-            request
-                .headers
-                .retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
-            request.headers.len() != before
+        ResponseRewriteAction::SetHeader { name, value } => {
+            set_header(&mut response.headers, name, value)
         }
+        ResponseRewriteAction::RemoveHeader { name } => remove_header(&mut response.headers, name),
     }
+}
+
+fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) -> bool {
+    if !valid_header_name(name) || !valid_header_value(value) {
+        return false;
+    }
+    let existing = headers
+        .iter()
+        .find(|(existing, _)| existing.eq_ignore_ascii_case(name));
+    if existing.is_some_and(|(_, existing_value)| existing_value == value) {
+        return false;
+    }
+    headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+    headers.push((name.to_owned(), value.to_owned()));
+    true
+}
+
+fn remove_header(headers: &mut Vec<(String, String)>, name: &str) -> bool {
+    if !valid_header_name(name) {
+        return false;
+    }
+    let before = headers.len();
+    headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+    headers.len() != before
 }
 
 fn normalize_path(value: &str) -> Option<String> {
@@ -149,10 +206,32 @@ fn valid_header_value(value: &str) -> bool {
         .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
 }
 
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        409 => "Conflict",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::parse_request_head;
+    use crate::http::{parse_request_head, parse_response_head};
 
     fn request() -> ParsedRequestHead {
         parse_request_head(
@@ -161,53 +240,53 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn disabled_rule_never_matches() {
-        let mut rule = RewriteRule {
-            id: "disabled".into(),
-            enabled: false,
+    fn base_rule() -> RewriteRule {
+        RewriteRule {
+            id: "rule".into(),
+            enabled: true,
             host_contains: Some("example.com".into()),
             path_prefix: Some("/v1".into()),
-            actions: vec![RewriteAction::SetPath {
-                value: "/changed".into(),
-            }],
-        };
+            actions: Vec::new(),
+            response_actions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn disabled_rule_never_matches() {
+        let mut rule = base_rule();
+        rule.enabled = false;
         assert!(!rule.matches(&request()));
         rule.enabled = true;
         assert!(rule.matches(&request()));
     }
 
     #[test]
-    fn actions_are_applied_in_rule_order() {
+    fn request_actions_are_applied_in_rule_order() {
         let mut request = request();
-        let rules = vec![
-            RewriteRule {
-                id: "first".into(),
-                enabled: true,
-                host_contains: Some("API.EXAMPLE".into()),
-                path_prefix: Some("/v1".into()),
-                actions: vec![
-                    RewriteAction::SetPath {
-                        value: "v2/users".into(),
-                    },
-                    RewriteAction::RemoveHeader {
-                        name: "authorization".into(),
-                    },
-                ],
+        let mut first = base_rule();
+        first.id = "first".into();
+        first.host_contains = Some("API.EXAMPLE".into());
+        first.actions = vec![
+            RewriteAction::SetPath {
+                value: "v2/users".into(),
             },
-            RewriteRule {
-                id: "second".into(),
-                enabled: true,
-                host_contains: None,
-                path_prefix: Some("/v2".into()),
-                actions: vec![RewriteAction::SetHeader {
-                    name: "X-Debug".into(),
-                    value: "2".into(),
-                }],
+            RewriteAction::RemoveHeader {
+                name: "authorization".into(),
             },
         ];
+        let second = RewriteRule {
+            id: "second".into(),
+            enabled: true,
+            host_contains: None,
+            path_prefix: Some("/v2".into()),
+            actions: vec![RewriteAction::SetHeader {
+                name: "X-Debug".into(),
+                value: "2".into(),
+            }],
+            response_actions: Vec::new(),
+        };
 
-        let applied = apply_request_rules(&mut request, &rules);
+        let applied = apply_request_rules(&mut request, &[first, second]);
         assert_eq!(applied, vec!["first", "second"]);
         assert_eq!(request.destination.origin_form_target, "/v2/users");
         assert!(
@@ -216,42 +295,70 @@ mod tests {
                 .iter()
                 .all(|(name, _)| !name.eq_ignore_ascii_case("authorization"))
         );
-        assert_eq!(
-            request
+    }
+
+    #[test]
+    fn response_actions_change_status_and_headers() {
+        let request = request();
+        let mut response = parse_response_head(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Remove: yes\r\n\r\n",
+        )
+        .unwrap();
+        let mut rule = base_rule();
+        rule.response_actions = vec![
+            ResponseRewriteAction::SetStatus { value: 418 },
+            ResponseRewriteAction::SetHeader {
+                name: "X-Debug".into(),
+                value: "rewritten".into(),
+            },
+            ResponseRewriteAction::RemoveHeader {
+                name: "X-Remove".into(),
+            },
+        ];
+
+        let applied = apply_response_rules(&request, &mut response, &[rule]);
+        assert_eq!(applied, vec!["rule"]);
+        assert_eq!(response.status_code, 418);
+        assert_eq!(response.reason, "");
+        assert!(response.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("x-debug") && value == "rewritten"
+        }));
+        assert!(
+            response
                 .headers
                 .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case("x-debug"))
-                .map(|(_, value)| value.as_str()),
-            Some("2")
+                .all(|(name, _)| !name.eq_ignore_ascii_case("x-remove"))
         );
     }
 
     #[test]
-    fn unsafe_path_and_header_values_are_ignored() {
-        let mut request = request();
-        let original = request.clone();
-        let rules = vec![RewriteRule {
-            id: "unsafe".into(),
-            enabled: true,
-            host_contains: None,
-            path_prefix: None,
-            actions: vec![
-                RewriteAction::SetPath {
-                    value: "/ok\r\nInjected: yes".into(),
-                },
-                RewriteAction::SetHeader {
-                    name: "X-Test\r\nInjected".into(),
-                    value: "1".into(),
-                },
-                RewriteAction::SetHeader {
-                    name: "X-Test".into(),
-                    value: "safe\r\nInjected: yes".into(),
-                },
-            ],
-        }];
+    fn unsafe_values_and_invalid_status_are_ignored() {
+        let request = request();
+        let original_request = request.clone();
+        let mut mutable_request = request;
+        let mut rule = base_rule();
+        rule.actions = vec![
+            RewriteAction::SetPath {
+                value: "/ok\r\nInjected: yes".into(),
+            },
+            RewriteAction::SetHeader {
+                name: "X-Test\r\nInjected".into(),
+                value: "1".into(),
+            },
+        ];
+        assert!(apply_request_rules(&mut mutable_request, &[rule.clone()]).is_empty());
+        assert_eq!(mutable_request, original_request);
 
-        let applied = apply_request_rules(&mut request, &rules);
-        assert!(applied.is_empty());
-        assert_eq!(request, original);
+        let mut response = parse_response_head(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+        let original_response = response.clone();
+        rule.response_actions = vec![
+            ResponseRewriteAction::SetStatus { value: 99 },
+            ResponseRewriteAction::SetHeader {
+                name: "X-Test".into(),
+                value: "bad\r\nInjected: yes".into(),
+            },
+        ];
+        assert!(apply_response_rules(&original_request, &mut response, &[rule]).is_empty());
+        assert_eq!(response, original_response);
     }
 }
