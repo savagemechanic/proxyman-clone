@@ -20,6 +20,11 @@ public struct EngineStatus: Codable, Equatable, Sendable {
 public struct HeaderField: Codable, Equatable, Sendable {
     public let name: String
     public let value: String
+
+    public init(name: String, value: String) {
+        self.name = name
+        self.value = value
+    }
 }
 
 public struct BodyPreview: Codable, Equatable, Sendable {
