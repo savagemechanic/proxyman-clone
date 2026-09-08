@@ -119,10 +119,13 @@ fn apply_request_action(request: &mut ParsedRequestHead, action: &RewriteAction)
     }
 }
 
-fn apply_response_action(response: &mut ParsedResponseHead, action: &ResponseRewriteAction) -> bool {
+fn apply_response_action(
+    response: &mut ParsedResponseHead,
+    action: &ResponseRewriteAction,
+) -> bool {
     match action {
         ResponseRewriteAction::SetStatus { value } => {
-            if !(100..=599).contains(value) || response.status_code == *value {
+            if !valid_status_override(*value) || response.status_code == *value {
                 return false;
             }
             response.status_code = *value;
@@ -204,6 +207,10 @@ fn valid_header_value(value: &str) -> bool {
     !value
         .bytes()
         .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
+}
+
+fn valid_status_override(status: u16) -> bool {
+    (200..=599).contains(&status) && !matches!(status, 204 | 205 | 304)
 }
 
 fn reason_phrase(status: u16) -> &'static str {
@@ -320,9 +327,11 @@ mod tests {
         assert_eq!(applied, vec!["rule"]);
         assert_eq!(response.status_code, 418);
         assert_eq!(response.reason, "");
-        assert!(response.headers.iter().any(|(name, value)| {
-            name.eq_ignore_ascii_case("x-debug") && value == "rewritten"
-        }));
+        assert!(
+            response.headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("x-debug") && value == "rewritten"
+            })
+        );
         assert!(
             response
                 .headers
@@ -332,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_values_and_invalid_status_are_ignored() {
+    fn unsafe_values_and_bodyless_statuses_are_ignored() {
         let request = request();
         let original_request = request.clone();
         let mut mutable_request = request;
@@ -352,7 +361,7 @@ mod tests {
         let mut response = parse_response_head(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
         let original_response = response.clone();
         rule.response_actions = vec![
-            ResponseRewriteAction::SetStatus { value: 99 },
+            ResponseRewriteAction::SetStatus { value: 204 },
             ResponseRewriteAction::SetHeader {
                 name: "X-Test".into(),
                 value: "bad\r\nInjected: yes".into(),
