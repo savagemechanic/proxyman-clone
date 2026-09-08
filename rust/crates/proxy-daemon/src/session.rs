@@ -51,6 +51,16 @@ impl SessionStore {
         }
     }
 
+    pub async fn get(&self, id: u64) -> Option<CapturedTransaction> {
+        self.inner
+            .transactions
+            .read()
+            .await
+            .iter()
+            .find(|transaction| transaction.id == id)
+            .cloned()
+    }
+
     pub async fn set_request_preview(&self, id: u64, preview: BodyPreview) {
         let mut transactions = self.inner.transactions.write().await;
         if let Some(transaction) = transactions
@@ -137,5 +147,14 @@ mod tests {
             captured.iter().map(|item| item.id).collect::<Vec<_>>(),
             vec![3, 2]
         );
+    }
+
+    #[tokio::test]
+    async fn gets_transaction_by_id() {
+        let store = SessionStore::new(2);
+        store.insert(transaction(11)).await;
+        store.insert(transaction(12)).await;
+        assert_eq!(store.get(11).await.map(|item| item.id), Some(11));
+        assert!(store.get(99).await.is_none());
     }
 }
