@@ -20,6 +20,11 @@ public struct EngineStatus: Codable, Equatable, Sendable {
 public struct HeaderField: Codable, Equatable, Sendable {
     public let name: String
     public let value: String
+
+    public init(name: String, value: String) {
+        self.name = name
+        self.value = value
+    }
 }
 
 public struct BodyPreview: Codable, Equatable, Sendable {
@@ -298,6 +303,20 @@ public actor EngineClient {
         return transaction
     }
 
+    public func executeRequest(_ request: ComposedRequest) async throws -> CapturedTransaction {
+        let command = ExecuteRequestCommand(request: request)
+        let encoded = try JSONEncoder().encode(command)
+        guard let line = String(data: encoded, encoding: .utf8) else {
+            throw EngineClientError.invalidResponse
+        }
+        let data = try await send(jsonLine: line)
+        let envelope = try JSONDecoder().decode(EngineEnvelope.self, from: data)
+        guard envelope.type == "execution_result", let transaction = envelope.transaction else {
+            throw envelope.errorOrInvalidResponse
+        }
+        return transaction
+    }
+
     private func send(jsonLine: String) async throws -> Data {
         let connection = NWConnection(host: host, port: port, using: .tcp)
 
@@ -349,6 +368,11 @@ private struct ReplaceRewriteRulesCommand: Encodable {
 private struct ReplayTransactionCommand: Encodable {
     let type = "replay_transaction"
     let id: UInt64
+}
+
+private struct ExecuteRequestCommand: Encodable {
+    let type = "execute_request"
+    let request: ComposedRequest
 }
 
 private final class ContinuationBox: @unchecked Sendable {

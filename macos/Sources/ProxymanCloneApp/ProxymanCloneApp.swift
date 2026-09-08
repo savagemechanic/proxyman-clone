@@ -15,6 +15,7 @@ struct ProxymanCloneApp: App {
 
 private enum Workspace: String, Identifiable, Hashable {
     case traffic
+    case composer
     case rules
 
     var id: Self { self }
@@ -41,6 +42,8 @@ struct ContentView: View {
     @State private var isReplaying = false
     @State private var searchText = ""
     @State private var trafficFilter: TrafficFilter = .all
+    @State private var composerPrefill: ComposerPrefill?
+    @State private var composerPrefillToken = UUID()
 
     private var activeWorkspace: Workspace {
         workspace ?? .traffic
@@ -61,6 +64,8 @@ struct ContentView: View {
             List(selection: $workspace) {
                 Label("Traffic", systemImage: "arrow.left.arrow.right")
                     .tag(Workspace.traffic)
+                Label("Composer", systemImage: "paperplane")
+                    .tag(Workspace.composer)
                 Label("Rules", systemImage: "slider.horizontal.3")
                     .tag(Workspace.rules)
             }
@@ -109,11 +114,18 @@ struct ContentView: View {
             }
             .navigationTitle("Traffic")
             .searchable(text: $searchText, prompt: "Method, host, path, status")
+        case .composer:
+            ContentUnavailableView(
+                "Request Composer",
+                systemImage: "paperplane",
+                description: Text("Build a new HTTP/HTTPS request or open a captured request from Traffic.")
+            )
+            .navigationTitle("Composer")
         case .rules:
             ContentUnavailableView(
-                "Request Rewrite Rules",
+                "Rewrite Rules",
                 systemImage: "slider.horizontal.3",
-                description: Text("Create and order rules in the editor. Rules are applied before requests are forwarded upstream.")
+                description: Text("Create and order request/response rewrite rules used by the proxy engine.")
             )
             .navigationTitle("Rules")
         }
@@ -125,6 +137,13 @@ struct ContentView: View {
         case .traffic:
             inspector
                 .navigationTitle("Inspector")
+        case .composer:
+            ComposerWorkspace(
+                prefill: composerPrefill,
+                prefillToken: composerPrefillToken,
+                onExecuted: composerDidExecute
+            )
+            .navigationTitle("Composer")
         case .rules:
             RulesWorkspace()
                 .navigationTitle("Rules")
@@ -189,6 +208,13 @@ struct ContentView: View {
                         Text("\(transaction.scheme)://\(transaction.host)\(transaction.target)")
                             .textSelection(.enabled)
                         Spacer()
+                        Button {
+                            openInComposer(transaction)
+                        } label: {
+                            Label("Open in Composer", systemImage: "square.and.pencil")
+                        }
+                        .disabled(transaction.scheme == "tunnel")
+                        .help(transaction.scheme == "tunnel" ? "CONNECT tunnels cannot be composed" : "Edit a copy of this request")
                         Button {
                             replay(transaction)
                         } label: {
@@ -333,6 +359,27 @@ struct ContentView: View {
             return text
         }
         return pretty
+    }
+
+    private func openInComposer(_ transaction: CapturedTransaction) {
+        guard let prefill = ComposerPrefill(transaction: transaction) else {
+            statusText = "This transaction cannot be opened in Composer"
+            return
+        }
+        composerPrefill = prefill
+        composerPrefillToken = UUID()
+        workspace = .composer
+    }
+
+    private func composerDidExecute(_ transaction: CapturedTransaction) {
+        if let index = transactions.firstIndex(where: { $0.id == transaction.id }) {
+            transactions[index] = transaction
+        } else {
+            transactions.insert(transaction, at: 0)
+        }
+        selectedID = transaction.id
+        statusText = "Composer captured transaction \(transaction.id)"
+        workspace = .traffic
     }
 
     private func replay(_ transaction: CapturedTransaction) {
