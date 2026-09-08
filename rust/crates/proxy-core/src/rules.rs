@@ -140,7 +140,7 @@ fn apply_response_action(
 }
 
 fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) -> bool {
-    if !valid_header_name(name) || !valid_header_value(value) {
+    if !valid_rewrite_header_name(name) || !valid_header_value(value) {
         return false;
     }
     let existing = headers
@@ -155,7 +155,7 @@ fn set_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) -> b
 }
 
 fn remove_header(headers: &mut Vec<(String, String)>, name: &str) -> bool {
-    if !valid_header_name(name) {
+    if !valid_rewrite_header_name(name) {
         return false;
     }
     let before = headers.len();
@@ -177,6 +177,14 @@ fn normalize_path(value: &str) -> Option<String> {
     } else {
         format!("/{value}")
     })
+}
+
+fn valid_rewrite_header_name(name: &str) -> bool {
+    valid_header_name(name)
+        && !matches!(
+            name.to_ascii_lowercase().as_str(),
+            "content-length" | "transfer-encoding" | "connection" | "proxy-connection"
+        )
 }
 
 fn valid_header_name(name: &str) -> bool {
@@ -341,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_values_and_bodyless_statuses_are_ignored() {
+    fn unsafe_values_bodyless_statuses_and_framing_headers_are_ignored() {
         let request = request();
         let original_request = request.clone();
         let mut mutable_request = request;
@@ -351,17 +359,20 @@ mod tests {
                 value: "/ok\r\nInjected: yes".into(),
             },
             RewriteAction::SetHeader {
-                name: "X-Test\r\nInjected".into(),
-                value: "1".into(),
+                name: "Content-Length".into(),
+                value: "999".into(),
             },
         ];
         assert!(apply_request_rules(&mut mutable_request, &[rule.clone()]).is_empty());
         assert_eq!(mutable_request, original_request);
 
-        let mut response = parse_response_head(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+        let mut response = parse_response_head(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n").unwrap();
         let original_response = response.clone();
         rule.response_actions = vec![
             ResponseRewriteAction::SetStatus { value: 204 },
+            ResponseRewriteAction::RemoveHeader {
+                name: "Content-Length".into(),
+            },
             ResponseRewriteAction::SetHeader {
                 name: "X-Test".into(),
                 value: "bad\r\nInjected: yes".into(),
