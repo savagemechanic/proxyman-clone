@@ -213,7 +213,7 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"status""#));
         assert!(json.contains(r#""protocol_version":1"#));
-        assert!(json.contains(r#""tls_interception_enabled":false""#));
+        assert!(json.contains(r#""tls_interception_enabled":false"#));
     }
 
     #[test]
