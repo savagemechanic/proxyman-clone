@@ -179,7 +179,9 @@ fn split_authority(authority: &str, default_port: u16) -> Result<(String, u16), 
             if host.is_empty() {
                 return Err(ParseRequestError::MissingHost);
             }
-            let port = port_text.parse().map_err(|_| ParseRequestError::InvalidPort)?;
+            let port = port_text
+                .parse()
+                .map_err(|_| ParseRequestError::InvalidPort)?;
             Ok((host.to_owned(), port))
         }
         _ => {
@@ -198,7 +200,8 @@ mod tests {
 
     #[test]
     fn parses_absolute_form_http_request() {
-        let bytes = b"GET http://example.com:8080/api?q=1 HTTP/1.1\r\nHost: example.com:8080\r\n\r\n";
+        let bytes =
+            b"GET http://example.com:8080/api?q=1 HTTP/1.1\r\nHost: example.com:8080\r\n\r\n";
         let parsed = parse_request_head(bytes).unwrap();
         assert_eq!(parsed.method, "GET");
         assert_eq!(parsed.destination.host, "example.com");
@@ -230,6 +233,9 @@ mod tests {
         let bytes = b"GET http://example.com/test HTTP/1.1\r\nHost: example.com\r\n\r\n";
         let parsed = parse_request_head(bytes).unwrap();
         let rewritten = rewrite_to_origin_form(bytes, &parsed);
-        assert_eq!(rewritten, b"GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n");
+        assert_eq!(
+            rewritten,
+            b"GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n"
+        );
     }
 }

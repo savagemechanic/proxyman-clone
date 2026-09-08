@@ -14,6 +14,7 @@ struct ProxymanCloneApp: App {
 
 struct ContentView: View {
     @State private var statusText = "Engine disconnected"
+    @State private var tlsText = "TLS interception unknown"
     @State private var isChecking = false
 
     var body: some View {
@@ -37,6 +38,8 @@ struct ContentView: View {
                 Text("Inspector")
                     .font(.title2.weight(.semibold))
                 Text(statusText)
+                    .foregroundStyle(.secondary)
+                Label(tlsText, systemImage: "lock.shield")
                     .foregroundStyle(.secondary)
                 Button(isChecking ? "Checking…" : "Check Engine") {
                     checkEngine()
@@ -63,8 +66,10 @@ struct ContentView: View {
             do {
                 let status = try await EngineClient().fetchStatus()
                 statusText = "Engine \(status.proxyState) · protocol v\(status.protocolVersion)"
+                tlsText = status.tlsInterceptionEnabled ? "TLS interception enabled" : "TLS interception disabled"
             } catch {
                 statusText = "Engine unavailable: \(error.localizedDescription)"
+                tlsText = "TLS interception unknown"
             }
         }
     }

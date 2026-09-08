@@ -6,12 +6,14 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public let proxyState: String
     public let listenAddress: String?
     public let capturedTransactions: UInt64
+    public let tlsInterceptionEnabled: Bool
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
         case proxyState = "proxy_state"
         case listenAddress = "listen_address"
         case capturedTransactions = "captured_transactions"
+        case tlsInterceptionEnabled = "tls_interception_enabled"
     }
 }
 
@@ -45,36 +47,35 @@ public actor EngineClient {
         let connection = NWConnection(host: host, port: port, using: .tcp)
 
         return try await withCheckedThrowingContinuation { continuation in
-            var resumed = false
-            func finish(_ result: Result<Data, Error>) {
-                guard !resumed else { return }
-                resumed = true
-                connection.cancel()
-                continuation.resume(with: result)
-            }
+            let completion = ContinuationBox(continuation)
 
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
                     connection.send(content: Data((jsonLine + "\n").utf8), completion: .contentProcessed { error in
                         if let error {
-                            finish(.failure(error))
+                            completion.finish(.failure(error), connection: connection)
                             return
                         }
 
                         connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { data, _, _, error in
                             if let error {
-                                finish(.failure(error))
+                                completion.finish(.failure(error), connection: connection)
                             } else if let data {
-                                let firstLine = data.split(separator: 0x0A, maxSplits: 1).first.map(Data.init) ?? data
-                                finish(.success(firstLine))
+                                let firstLine: Data
+                                if let newline = data.firstIndex(of: UInt8(ascii: "\n")) {
+                                    firstLine = data.subdata(in: data.startIndex..<newline)
+                                } else {
+                                    firstLine = data
+                                }
+                                completion.finish(.success(firstLine), connection: connection)
                             } else {
-                                finish(.failure(EngineClientError.invalidResponse))
+                                completion.finish(.failure(EngineClientError.invalidResponse), connection: connection)
                             }
                         }
                     })
                 case .failed(let error):
-                    finish(.failure(error))
+                    completion.finish(.failure(error), connection: connection)
                 default:
                     break
                 }
@@ -82,6 +83,28 @@ public actor EngineClient {
 
             connection.start(queue: .global(qos: .userInitiated))
         }
+    }
+}
+
+private final class ContinuationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Data, Error>?
+
+    init(_ continuation: CheckedContinuation<Data, Error>) {
+        self.continuation = continuation
+    }
+
+    func finish(_ result: Result<Data, Error>, connection: NWConnection) {
+        lock.lock()
+        guard let continuation else {
+            lock.unlock()
+            return
+        }
+        self.continuation = nil
+        lock.unlock()
+
+        connection.cancel()
+        continuation.resume(with: result)
     }
 }
 

@@ -25,6 +25,7 @@ pub struct EngineStatus {
     pub proxy_state: ProxyState,
     pub listen_address: Option<String>,
     pub captured_transactions: u64,
+    pub tls_interception_enabled: bool,
 }
 
 impl Default for EngineStatus {
@@ -34,6 +35,7 @@ impl Default for EngineStatus {
             proxy_state: ProxyState::Stopped,
             listen_address: None,
             captured_transactions: 0,
+            tls_interception_enabled: false,
         }
     }
 }
@@ -77,6 +79,7 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"status""#));
         assert!(json.contains(r#""protocol_version":1"#));
+        assert!(json.contains(r#""tls_interception_enabled":false"#));
     }
 
     #[test]
@@ -85,5 +88,6 @@ mod tests {
         assert_eq!(status.protocol_version, PROTOCOL_VERSION);
         assert_eq!(status.proxy_state, ProxyState::Stopped);
         assert_eq!(status.captured_transactions, 0);
+        assert!(!status.tls_interception_enabled);
     }
 }
