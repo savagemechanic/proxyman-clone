@@ -37,7 +37,11 @@ impl RewriteRule {
         }
 
         if let Some(path_prefix) = self.path_prefix.as_deref() {
-            if !request.destination.origin_form_target.starts_with(path_prefix) {
+            if !request
+                .destination
+                .origin_form_target
+                .starts_with(path_prefix)
+            {
                 return false;
             }
         }
@@ -46,10 +50,7 @@ impl RewriteRule {
     }
 }
 
-pub fn apply_request_rules(
-    request: &mut ParsedRequestHead,
-    rules: &[RewriteRule],
-) -> Vec<String> {
+pub fn apply_request_rules(request: &mut ParsedRequestHead, rules: &[RewriteRule]) -> Vec<String> {
     let mut applied = Vec::new();
 
     for rule in rules {
@@ -124,14 +125,28 @@ fn valid_header_name(name: &str) -> bool {
             byte.is_ascii_alphanumeric()
                 || matches!(
                     byte,
-                    b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.'
-                        | b'^' | b'_' | b'`' | b'|' | b'~'
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
                 )
         })
 }
 
 fn valid_header_value(value: &str) -> bool {
-    !value.bytes().any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
+    !value
+        .bytes()
+        .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
 }
 
 #[cfg(test)]
