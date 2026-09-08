@@ -16,11 +16,11 @@ use proxy_core::{
     body::{BodyCapture, content_type},
     handle_command,
     http::{
-        MAX_REQUEST_HEAD_BYTES, MAX_RESPONSE_HEAD_BYTES, content_length, find_request_head_end,
-        find_response_head_end, is_chunked, parse_request_head, parse_response_head,
-        upstream_request_head,
+        MAX_REQUEST_HEAD_BYTES, MAX_RESPONSE_HEAD_BYTES, ParsedResponseHead, content_length,
+        find_request_head_end, find_response_head_end, is_chunked, parse_request_head,
+        parse_response_head, upstream_request_head,
     },
-    rules::{RewriteRule, apply_request_rules},
+    rules::{RewriteRule, apply_request_rules, apply_response_rules},
 };
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName};
 use session::SessionStore;
@@ -342,7 +342,7 @@ where
         .context("request head unexpectedly incomplete after read")?;
     let mut parsed = parse_request_head(&buffered[..head_end])?;
 
-    let applied_rules = {
+    let applied_request_rules = {
         let rules = rewrite_rules.read().await;
         apply_request_rules(&mut parsed, &rules)
     };
@@ -390,9 +390,17 @@ where
     };
     let response_head_end = find_response_head_end(&response_buffer)?
         .context("response head unexpectedly incomplete after read")?;
-    let response = parse_response_head(&response_buffer[..response_head_end])?;
+    let mut response = parse_response_head(&response_buffer[..response_head_end])?;
 
-    downstream.write_all(&response_buffer).await?;
+    let applied_response_rules = {
+        let rules = rewrite_rules.read().await;
+        apply_response_rules(&parsed, &mut response, &rules)
+    };
+
+    downstream.write_all(&serialize_response_head(&response)).await?;
+    downstream
+        .write_all(&response_buffer[response_head_end..])
+        .await?;
     let mut response_capture = BodyCapture::default();
     response_capture.ingest(&response_buffer[response_head_end..]);
     copy_with_capture(&mut upstream, &mut downstream, &mut response_capture).await?;
@@ -413,7 +421,8 @@ where
         method = %parsed.method,
         host = %parsed.destination.host,
         status = response.status_code,
-        rewrite_rules_applied = applied_rules.len(),
+        request_rewrite_rules_applied = applied_request_rules.len(),
+        response_rewrite_rules_applied = applied_response_rules.len(),
         "captured HTTP exchange"
     );
     Ok(())
@@ -461,6 +470,23 @@ fn header_fields(headers: &[(String, String)]) -> Vec<HeaderField> {
         .collect()
 }
 
+fn serialize_response_head(response: &ParsedResponseHead) -> Vec<u8> {
+    let mut bytes = format!("{} {}", response.version, response.status_code).into_bytes();
+    if !response.reason.is_empty() {
+        bytes.push(b' ');
+        bytes.extend_from_slice(response.reason.as_bytes());
+    }
+    bytes.extend_from_slice(b"\r\n");
+    for (name, value) in &response.headers {
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.extend_from_slice(b": ");
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.extend_from_slice(b"\r\n");
+    }
+    bytes.extend_from_slice(b"\r\n");
+    bytes
+}
+
 fn validate_rewrite_rules(rules: &[RewriteRule]) -> Result<(), String> {
     if rules.len() > MAX_REWRITE_RULES {
         return Err(format!(
@@ -479,7 +505,12 @@ fn validate_rewrite_rules(rules: &[RewriteRule]) -> Result<(), String> {
         }
         if rule.actions.len() > MAX_ACTIONS_PER_RULE {
             return Err(format!(
-                "rewrite rule {id} has too many actions; maximum is {MAX_ACTIONS_PER_RULE}"
+                "rewrite rule {id} has too many request actions; maximum is {MAX_ACTIONS_PER_RULE}"
+            ));
+        }
+        if rule.response_actions.len() > MAX_ACTIONS_PER_RULE {
+            return Err(format!(
+                "rewrite rule {id} has too many response actions; maximum is {MAX_ACTIONS_PER_RULE}"
             ));
         }
     }
