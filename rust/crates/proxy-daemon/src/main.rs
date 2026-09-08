@@ -1,6 +1,9 @@
 mod certificates;
+mod composer;
+mod composer_runtime;
 mod replay;
 mod replay_runtime;
+mod request_runtime;
 mod rule_store;
 mod session;
 
@@ -197,6 +200,15 @@ async fn serve_control_client(
         if let ClientCommand::ReplayTransaction { id } = &command {
             let event =
                 replay_runtime::replay_transaction(*id, &session, &status, &rewrite_rules).await;
+            writer
+                .write_all(format!("{}\n", serde_json::to_string(&event)?).as_bytes())
+                .await?;
+            continue;
+        }
+
+        if let ClientCommand::ExecuteRequest { request } = &command {
+            let event =
+                composer_runtime::execute_request(request, &session, &status, &rewrite_rules).await;
             writer
                 .write_all(format!("{}\n", serde_json::to_string(&event)?).as_bytes())
                 .await?;
