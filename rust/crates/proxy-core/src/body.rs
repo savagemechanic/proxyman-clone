@@ -28,7 +28,8 @@ impl BodyCapture {
         self.total_bytes = self.total_bytes.saturating_add(bytes.len() as u64);
         let remaining = self.limit.saturating_sub(self.captured.len());
         if remaining > 0 {
-            self.captured.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+            self.captured
+                .extend_from_slice(&bytes[..bytes.len().min(remaining)]);
         }
     }
 
