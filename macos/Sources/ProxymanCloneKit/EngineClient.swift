@@ -78,19 +78,22 @@ public struct RewriteRule: Codable, Equatable, Identifiable, Sendable {
     public var hostContains: String?
     public var pathPrefix: String?
     public var actions: [RewriteAction]
+    public var responseActions: [ResponseRewriteAction]
 
     public init(
         id: String,
         enabled: Bool = true,
         hostContains: String? = nil,
         pathPrefix: String? = nil,
-        actions: [RewriteAction] = []
+        actions: [RewriteAction] = [],
+        responseActions: [ResponseRewriteAction] = []
     ) {
         self.id = id
         self.enabled = enabled
         self.hostContains = hostContains
         self.pathPrefix = pathPrefix
         self.actions = actions
+        self.responseActions = responseActions
     }
 
     enum CodingKeys: String, CodingKey {
@@ -99,6 +102,27 @@ public struct RewriteRule: Codable, Equatable, Identifiable, Sendable {
         case hostContains = "host_contains"
         case pathPrefix = "path_prefix"
         case actions
+        case responseActions = "response_actions"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        hostContains = try container.decodeIfPresent(String.self, forKey: .hostContains)
+        pathPrefix = try container.decodeIfPresent(String.self, forKey: .pathPrefix)
+        actions = try container.decode([RewriteAction].self, forKey: .actions)
+        responseActions = try container.decodeIfPresent([ResponseRewriteAction].self, forKey: .responseActions) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encodeIfPresent(hostContains, forKey: .hostContains)
+        try container.encodeIfPresent(pathPrefix, forKey: .pathPrefix)
+        try container.encode(actions, forKey: .actions)
+        try container.encode(responseActions, forKey: .responseActions)
     }
 }
 
@@ -139,6 +163,55 @@ public enum RewriteAction: Codable, Equatable, Sendable {
         switch self {
         case .setPath(let value):
             try container.encode(Kind.setPath, forKey: .type)
+            try container.encode(value, forKey: .value)
+        case .setHeader(let name, let value):
+            try container.encode(Kind.setHeader, forKey: .type)
+            try container.encode(name, forKey: .name)
+            try container.encode(value, forKey: .value)
+        case .removeHeader(let name):
+            try container.encode(Kind.removeHeader, forKey: .type)
+            try container.encode(name, forKey: .name)
+        }
+    }
+}
+
+public enum ResponseRewriteAction: Codable, Equatable, Sendable {
+    case setStatus(UInt16)
+    case setHeader(name: String, value: String)
+    case removeHeader(String)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case value
+        case name
+    }
+
+    private enum Kind: String, Codable {
+        case setStatus = "set_status"
+        case setHeader = "set_header"
+        case removeHeader = "remove_header"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .type) {
+        case .setStatus:
+            self = .setStatus(try container.decode(UInt16.self, forKey: .value))
+        case .setHeader:
+            self = .setHeader(
+                name: try container.decode(String.self, forKey: .name),
+                value: try container.decode(String.self, forKey: .value)
+            )
+        case .removeHeader:
+            self = .removeHeader(try container.decode(String.self, forKey: .name))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .setStatus(let value):
+            try container.encode(Kind.setStatus, forKey: .type)
             try container.encode(value, forKey: .value)
         case .setHeader(let name, let value):
             try container.encode(Kind.setHeader, forKey: .type)
