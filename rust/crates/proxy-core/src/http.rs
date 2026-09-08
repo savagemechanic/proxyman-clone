@@ -138,18 +138,16 @@ pub fn rewrite_to_origin_form(head: &[u8], parsed: &ParsedRequestHead) -> Vec<u8
         return head.to_vec();
     }
 
-    let text = String::from_utf8_lossy(head);
-    let mut lines = text.split("\r\n");
-    let _ = lines.next();
+    let Some(first_line_end) = head.windows(2).position(|window| window == b"\r\n") else {
+        return head.to_vec();
+    };
     let mut rewritten = format!(
-        "{} {} {}\r\n",
+        "{} {} {}",
         parsed.method, parsed.destination.origin_form_target, parsed.version
-    );
-    for line in lines {
-        rewritten.push_str(line);
-        rewritten.push_str("\r\n");
-    }
-    rewritten.into_bytes()
+    )
+    .into_bytes();
+    rewritten.extend_from_slice(&head[first_line_end..]);
+    rewritten
 }
 
 fn split_authority_and_path(value: &str) -> (&str, &str) {
@@ -228,10 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_absolute_form_to_origin_form() {
+    fn rewrites_absolute_form_to_origin_form_without_extra_blank_lines() {
         let bytes = b"GET http://example.com/test HTTP/1.1\r\nHost: example.com\r\n\r\n";
         let parsed = parse_request_head(bytes).unwrap();
         let rewritten = rewrite_to_origin_form(bytes, &parsed);
-        assert!(rewritten.starts_with(b"GET /test HTTP/1.1\r\n"));
+        assert_eq!(rewritten, b"GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n");
     }
 }
