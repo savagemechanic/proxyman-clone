@@ -463,7 +463,9 @@ fn header_fields(headers: &[(String, String)]) -> Vec<HeaderField> {
 
 fn validate_rewrite_rules(rules: &[RewriteRule]) -> Result<(), String> {
     if rules.len() > MAX_REWRITE_RULES {
-        return Err(format!("too many rewrite rules; maximum is {MAX_REWRITE_RULES}"));
+        return Err(format!(
+            "too many rewrite rules; maximum is {MAX_REWRITE_RULES}"
+        ));
     }
 
     let mut ids = HashSet::new();
