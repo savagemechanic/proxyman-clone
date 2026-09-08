@@ -24,6 +24,57 @@ This is not an official Proxyman product, is not affiliated with Proxyman LLC, a
 
 ---
 
+## Development preview — try it now
+
+The project is already runnable from source on macOS. It is still a **development preview**, not a signed/notarized `.app` release.
+
+With Rust, Swift/Xcode, Git, and `curl` installed, the shortest path is:
+
+```bash
+git clone https://github.com/savagemechanic/proxyman-clone.git
+cd proxyman-clone/rust
+PROXYMAN_CLONE_TLS_INTERCEPT=1 cargo run -p proxy-daemon
+```
+
+Then launch the native app from another terminal:
+
+```bash
+cd proxyman-clone/macos
+swift run ProxymanCloneApp
+```
+
+And verify HTTPS interception without globally trusting the development CA:
+
+```bash
+curl \
+  --proxy http://127.0.0.1:8080 \
+  --cacert "$HOME/Library/Application Support/ProxymanClone/certificates/ca-cert.pem" \
+  https://example.com/
+```
+
+See **[Getting Started](docs/GETTING_STARTED.md)** for prerequisites, exact paths, TLS-off behavior, safety notes, overrides, troubleshooting, and development checks.
+
+### Working today
+
+The current development preview includes:
+
+- HTTP proxying and CONNECT tunneling
+- opt-in HTTPS MITM with locally generated/cached certificates
+- bounded request/response capture
+- native SwiftUI traffic list and inspector
+- search and protocol/status filtering
+- JSON/text body previews
+- request and response header/status rewrite rules
+- persistent rewrite-rule configuration
+- native Rules editor
+- HAR 1.2 export
+- Copy as cURL
+- safe one-click request replay
+
+The roadmap below deliberately includes features that are **not finished yet**. In particular, editable Composer UI, interactive breakpoints, Map Local/Remote, deeper protocol support, packaging, and extension APIs remain active work.
+
+---
+
 ## The vision
 
 Most developers should not need several separate tools just to understand an application's network behavior.
@@ -296,9 +347,11 @@ The existence of an interception feature does not grant permission to intercept 
 
 ## Project status
 
-🚧 **Early development**
+🚧 **Development preview**
 
-The architecture and core implementation are being built now. Expect rapid changes before the first stable release.
+The core HTTP/HTTPS proxy, native traffic inspector, rewrite rules, HAR export, Copy as cURL, and safe replay are functional from source. The project is still changing rapidly and does not yet ship a signed/notarized macOS application release.
+
+Start with **[Getting Started](docs/GETTING_STARTED.md)** if you want to test the current build.
 
 If you found this repository because you want an open-source desktop HTTP/HTTPS debugger, **star it now and watch the project grow.**
 
