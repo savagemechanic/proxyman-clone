@@ -397,7 +397,9 @@ where
         apply_response_rules(&parsed, &mut response, &rules)
     };
 
-    downstream.write_all(&serialize_response_head(&response)).await?;
+    downstream
+        .write_all(&serialize_response_head(&response))
+        .await?;
     downstream
         .write_all(&response_buffer[response_head_end..])
         .await?;
