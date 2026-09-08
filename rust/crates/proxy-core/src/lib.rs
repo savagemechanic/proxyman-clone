@@ -1,3 +1,5 @@
+pub mod http;
+
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u16 = 1;
