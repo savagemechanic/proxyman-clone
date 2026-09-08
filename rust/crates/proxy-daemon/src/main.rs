@@ -2,6 +2,7 @@ mod certificates;
 mod session;
 
 use std::{
+    collections::HashSet,
     path::PathBuf,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -19,6 +20,7 @@ use proxy_core::{
         find_response_head_end, is_chunked, parse_request_head, parse_response_head,
         upstream_request_head,
     },
+    rules::{RewriteRule, apply_request_rules},
 };
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName};
 use session::SessionStore;
@@ -32,12 +34,15 @@ use tracing::{info, warn};
 
 const DEFAULT_CONTROL_ADDR: &str = "127.0.0.1:9099";
 const DEFAULT_PROXY_ADDR: &str = "127.0.0.1:8080";
+const MAX_REWRITE_RULES: usize = 256;
+const MAX_ACTIONS_PER_RULE: usize = 32;
 
 #[derive(Clone)]
 struct RuntimeConfig {
     tls_interception_enabled: bool,
     certificate_authority: Option<CertificateAuthority>,
     session: SessionStore,
+    rewrite_rules: Arc<RwLock<Vec<RewriteRule>>>,
 }
 
 #[tokio::main]
@@ -69,10 +74,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let session = SessionStore::default();
+    let rewrite_rules = Arc::new(RwLock::new(Vec::new()));
     let runtime = RuntimeConfig {
         tls_interception_enabled,
         certificate_authority,
         session: session.clone(),
+        rewrite_rules: Arc::clone(&rewrite_rules),
     };
 
     let control_listener = TcpListener::bind(&control_addr)
@@ -98,8 +105,9 @@ async fn main() -> anyhow::Result<()> {
                 let (stream, peer) = accepted?;
                 let status = Arc::clone(&status);
                 let session = session.clone();
+                let rewrite_rules = Arc::clone(&rewrite_rules);
                 tokio::spawn(async move {
-                    if let Err(error) = serve_control_client(stream, status, session).await {
+                    if let Err(error) = serve_control_client(stream, status, session, rewrite_rules).await {
                         warn!(%peer, %error, "control client disconnected with error");
                     }
                 });
@@ -130,6 +138,7 @@ async fn serve_control_client(
     stream: TcpStream,
     status: Arc<RwLock<EngineStatus>>,
     session: SessionStore,
+    rewrite_rules: Arc<RwLock<Vec<RewriteRule>>>,
 ) -> anyhow::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -149,9 +158,24 @@ async fn serve_control_client(
             }
         };
 
+        if let ClientCommand::ReplaceRewriteRules { rules } = &command {
+            if let Err(message) = validate_rewrite_rules(rules) {
+                let event = proxy_core::EngineEvent::Error {
+                    code: "invalid_rewrite_rules".into(),
+                    message,
+                };
+                writer
+                    .write_all(format!("{}\n", serde_json::to_string(&event)?).as_bytes())
+                    .await?;
+                continue;
+            }
+            *rewrite_rules.write().await = rules.clone();
+        }
+
         let snapshot = status.read().await.clone();
         let transactions = session.list().await;
-        let event = handle_command(command, &snapshot, &transactions);
+        let rules_snapshot = rewrite_rules.read().await.clone();
+        let event = handle_command(command, &snapshot, &transactions, &rules_snapshot);
         writer
             .write_all(format!("{}\n", serde_json::to_string(&event)?).as_bytes())
             .await?;
@@ -214,6 +238,7 @@ async fn serve_proxy_client(
                 ca,
                 status,
                 runtime.session,
+                runtime.rewrite_rules,
             )
             .await;
         }
@@ -242,6 +267,7 @@ async fn serve_proxy_client(
         Some(buffered),
         status,
         runtime.session,
+        runtime.rewrite_rules,
     )
     .await
 }
@@ -253,6 +279,7 @@ async fn serve_intercepted_tls(
     ca: &CertificateAuthority,
     status: Arc<RwLock<EngineStatus>>,
     session: SessionStore,
+    rewrite_rules: Arc<RwLock<Vec<RewriteRule>>>,
 ) -> anyhow::Result<()> {
     let identity = ca.identity_for_host(host).await?;
     let server_config = ServerConfig::builder()
@@ -282,7 +309,16 @@ async fn serve_intercepted_tls(
         .with_context(|| format!("upstream TLS handshake failed for {host}"))?;
 
     info!(%host, "TLS MITM session established");
-    proxy_single_exchange(downstream_tls, upstream_tls, "https", None, status, session).await
+    proxy_single_exchange(
+        downstream_tls,
+        upstream_tls,
+        "https",
+        None,
+        status,
+        session,
+        rewrite_rules,
+    )
+    .await
 }
 
 async fn proxy_single_exchange<D, U>(
@@ -292,6 +328,7 @@ async fn proxy_single_exchange<D, U>(
     initial_request: Option<Vec<u8>>,
     status: Arc<RwLock<EngineStatus>>,
     session: SessionStore,
+    rewrite_rules: Arc<RwLock<Vec<RewriteRule>>>,
 ) -> anyhow::Result<()>
 where
     D: AsyncRead + AsyncWrite + Unpin,
@@ -303,7 +340,12 @@ where
     };
     let head_end = find_request_head_end(&buffered)?
         .context("request head unexpectedly incomplete after read")?;
-    let parsed = parse_request_head(&buffered[..head_end])?;
+    let mut parsed = parse_request_head(&buffered[..head_end])?;
+
+    let applied_rules = {
+        let rules = rewrite_rules.read().await;
+        apply_request_rules(&mut parsed, &rules)
+    };
 
     let id = begin_transaction(&session, &status, scheme, &parsed.destination.host, &parsed).await;
     let request_body_length = content_length(&parsed.headers)?.unwrap_or(0);
@@ -371,6 +413,7 @@ where
         method = %parsed.method,
         host = %parsed.destination.host,
         status = response.status_code,
+        rewrite_rules_applied = applied_rules.len(),
         "captured HTTP exchange"
     );
     Ok(())
@@ -416,6 +459,29 @@ fn header_fields(headers: &[(String, String)]) -> Vec<HeaderField> {
             value: value.clone(),
         })
         .collect()
+}
+
+fn validate_rewrite_rules(rules: &[RewriteRule]) -> Result<(), String> {
+    if rules.len() > MAX_REWRITE_RULES {
+        return Err(format!("too many rewrite rules; maximum is {MAX_REWRITE_RULES}"));
+    }
+
+    let mut ids = HashSet::new();
+    for rule in rules {
+        let id = rule.id.trim();
+        if id.is_empty() || id.len() > 128 {
+            return Err("rewrite rule IDs must contain 1-128 characters".into());
+        }
+        if !ids.insert(id.to_owned()) {
+            return Err(format!("duplicate rewrite rule ID: {id}"));
+        }
+        if rule.actions.len() > MAX_ACTIONS_PER_RULE {
+            return Err(format!(
+                "rewrite rule {id} has too many actions; maximum is {MAX_ACTIONS_PER_RULE}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn copy_exact_remaining_with_capture<R, W>(
