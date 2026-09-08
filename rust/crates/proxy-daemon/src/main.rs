@@ -195,7 +195,8 @@ async fn serve_control_client(
         };
 
         if let ClientCommand::ReplayTransaction { id } = &command {
-            let event = replay_runtime::replay_transaction(*id, &session, &status, &rewrite_rules).await;
+            let event =
+                replay_runtime::replay_transaction(*id, &session, &status, &rewrite_rules).await;
             writer
                 .write_all(format!("{}\n", serde_json::to_string(&event)?).as_bytes())
                 .await?;
