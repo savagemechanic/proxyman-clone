@@ -13,7 +13,7 @@ pub enum ClientCommand {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
     Pong { protocol_version: u16 },
-    Status(EngineStatus),
+    Status { status: EngineStatus },
     Error { code: String, message: String },
 }
 
@@ -51,7 +51,9 @@ pub fn handle_command(command: ClientCommand, status: &EngineStatus) -> EngineEv
         ClientCommand::Ping => EngineEvent::Pong {
             protocol_version: PROTOCOL_VERSION,
         },
-        ClientCommand::GetStatus => EngineEvent::Status(status.clone()),
+        ClientCommand::GetStatus => EngineEvent::Status {
+            status: status.clone(),
+        },
     }
 }
 
@@ -65,6 +67,14 @@ mod tests {
         assert_eq!(json, r#"{"type":"get_status"}"#);
         let decoded: ClientCommand = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, ClientCommand::GetStatus);
+    }
+
+    #[test]
+    fn status_event_uses_versioned_envelope() {
+        let event = handle_command(ClientCommand::GetStatus, &EngineStatus::default());
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"status""#));
+        assert!(json.contains(r#""protocol_version":1"#));
     }
 
     #[test]
