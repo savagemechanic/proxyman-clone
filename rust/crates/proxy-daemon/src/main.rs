@@ -1,4 +1,6 @@
 mod certificates;
+mod replay;
+mod replay_runtime;
 mod rule_store;
 mod session;
 
@@ -191,6 +193,14 @@ async fn serve_control_client(
                 continue;
             }
         };
+
+        if let ClientCommand::ReplayTransaction { id } = &command {
+            let event = replay_runtime::replay_transaction(*id, &session, &status, &rewrite_rules).await;
+            writer
+                .write_all(format!("{}\n", serde_json::to_string(&event)?).as_bytes())
+                .await?;
+            continue;
+        }
 
         if let ClientCommand::ReplaceRewriteRules { rules } = &command {
             if let Err(message) = validate_rewrite_rules(rules) {
