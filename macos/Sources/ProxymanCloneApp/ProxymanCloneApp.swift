@@ -13,7 +13,7 @@ struct ProxymanCloneApp: App {
     }
 }
 
-private enum Workspace: String, Identifiable {
+private enum Workspace: String, Identifiable, Hashable {
     case traffic
     case rules
 
@@ -32,7 +32,7 @@ private enum TrafficFilter: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-    @State private var workspace: Workspace = .traffic
+    @State private var workspace: Workspace? = .traffic
     @State private var statusText = "Engine disconnected"
     @State private var tlsText = "TLS interception unknown"
     @State private var transactions: [CapturedTransaction] = []
@@ -40,6 +40,10 @@ struct ContentView: View {
     @State private var isChecking = false
     @State private var searchText = ""
     @State private var trafficFilter: TrafficFilter = .all
+
+    private var activeWorkspace: Workspace {
+        workspace ?? .traffic
+    }
 
     private var filteredTransactions: [CapturedTransaction] {
         transactions.filter { transaction in
@@ -66,7 +70,7 @@ struct ContentView: View {
             detailColumn
         }
         .toolbar {
-            if workspace == .traffic {
+            if activeWorkspace == .traffic {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Text(statusText)
                         .font(.caption)
@@ -79,7 +83,7 @@ struct ContentView: View {
             }
         }
         .task(id: workspace) {
-            guard workspace == .traffic else { return }
+            guard activeWorkspace == .traffic else { return }
             while !Task.isCancelled {
                 refresh()
                 try? await Task.sleep(for: .seconds(1))
@@ -89,7 +93,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var contentColumn: some View {
-        switch workspace {
+        switch activeWorkspace {
         case .traffic:
             VStack(spacing: 0) {
                 filterBar
@@ -110,7 +114,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detailColumn: some View {
-        switch workspace {
+        switch activeWorkspace {
         case .traffic:
             inspector
                 .navigationTitle("Inspector")
