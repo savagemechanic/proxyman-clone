@@ -1,6 +1,7 @@
 use std::fmt;
 
 pub const MAX_REQUEST_HEAD_BYTES: usize = 64 * 1024;
+pub const MAX_RESPONSE_HEAD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedRequestHead {
@@ -9,6 +10,14 @@ pub struct ParsedRequestHead {
     pub version: String,
     pub headers: Vec<(String, String)>,
     pub destination: Destination,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedResponseHead {
+    pub version: String,
+    pub status_code: u16,
+    pub reason: String,
+    pub headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,19 +34,23 @@ pub enum ParseRequestError {
     Incomplete,
     InvalidUtf8,
     InvalidRequestLine,
+    InvalidResponseLine,
     MissingHost,
     InvalidPort,
+    InvalidContentLength,
 }
 
 impl fmt::Display for ParseRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::HeaderTooLarge => f.write_str("request head exceeds configured limit"),
-            Self::Incomplete => f.write_str("request head is incomplete"),
-            Self::InvalidUtf8 => f.write_str("request head is not valid UTF-8/ASCII"),
+            Self::HeaderTooLarge => f.write_str("HTTP head exceeds configured limit"),
+            Self::Incomplete => f.write_str("HTTP head is incomplete"),
+            Self::InvalidUtf8 => f.write_str("HTTP head is not valid UTF-8/ASCII"),
             Self::InvalidRequestLine => f.write_str("request line is invalid"),
+            Self::InvalidResponseLine => f.write_str("response status line is invalid"),
             Self::MissingHost => f.write_str("request does not identify an upstream host"),
             Self::InvalidPort => f.write_str("request contains an invalid port"),
+            Self::InvalidContentLength => f.write_str("HTTP message contains an invalid Content-Length"),
         }
     }
 }
@@ -45,7 +58,15 @@ impl fmt::Display for ParseRequestError {
 impl std::error::Error for ParseRequestError {}
 
 pub fn find_request_head_end(bytes: &[u8]) -> Result<Option<usize>, ParseRequestError> {
-    if bytes.len() > MAX_REQUEST_HEAD_BYTES {
+    find_head_end(bytes, MAX_REQUEST_HEAD_BYTES)
+}
+
+pub fn find_response_head_end(bytes: &[u8]) -> Result<Option<usize>, ParseRequestError> {
+    find_head_end(bytes, MAX_RESPONSE_HEAD_BYTES)
+}
+
+fn find_head_end(bytes: &[u8], limit: usize) -> Result<Option<usize>, ParseRequestError> {
+    if bytes.len() > limit {
         return Err(ParseRequestError::HeaderTooLarge);
     }
 
@@ -71,6 +92,48 @@ pub fn parse_request_head(bytes: &[u8]) -> Result<ParsedRequestHead, ParseReques
         return Err(ParseRequestError::InvalidRequestLine);
     }
 
+    let headers = parse_header_lines(lines)?;
+    let destination = resolve_destination(method, target, &headers)?;
+    Ok(ParsedRequestHead {
+        method: method.to_owned(),
+        target: target.to_owned(),
+        version: version.to_owned(),
+        headers,
+        destination,
+    })
+}
+
+pub fn parse_response_head(bytes: &[u8]) -> Result<ParsedResponseHead, ParseRequestError> {
+    if bytes.len() > MAX_RESPONSE_HEAD_BYTES {
+        return Err(ParseRequestError::HeaderTooLarge);
+    }
+    let end = find_response_head_end(bytes)?.ok_or(ParseRequestError::Incomplete)?;
+    let text = std::str::from_utf8(&bytes[..end]).map_err(|_| ParseRequestError::InvalidUtf8)?;
+    let mut lines = text.split("\r\n");
+    let status_line = lines.next().ok_or(ParseRequestError::InvalidResponseLine)?;
+    let mut parts = status_line.splitn(3, ' ');
+    let version = parts.next().ok_or(ParseRequestError::InvalidResponseLine)?;
+    let status_code = parts
+        .next()
+        .ok_or(ParseRequestError::InvalidResponseLine)?
+        .parse::<u16>()
+        .map_err(|_| ParseRequestError::InvalidResponseLine)?;
+    let reason = parts.next().unwrap_or_default();
+    if !version.starts_with("HTTP/") || !(100..=999).contains(&status_code) {
+        return Err(ParseRequestError::InvalidResponseLine);
+    }
+
+    Ok(ParsedResponseHead {
+        version: version.to_owned(),
+        status_code,
+        reason: reason.to_owned(),
+        headers: parse_header_lines(lines)?,
+    })
+}
+
+fn parse_header_lines<'a>(
+    lines: impl Iterator<Item = &'a str>,
+) -> Result<Vec<(String, String)>, ParseRequestError> {
     let mut headers = Vec::new();
     for line in lines {
         if line.is_empty() {
@@ -81,14 +144,30 @@ pub fn parse_request_head(bytes: &[u8]) -> Result<ParsedRequestHead, ParseReques
             .ok_or(ParseRequestError::InvalidRequestLine)?;
         headers.push((name.trim().to_owned(), value.trim().to_owned()));
     }
+    Ok(headers)
+}
 
-    let destination = resolve_destination(method, target, &headers)?;
-    Ok(ParsedRequestHead {
-        method: method.to_owned(),
-        target: target.to_owned(),
-        version: version.to_owned(),
-        headers,
-        destination,
+pub fn content_length(headers: &[(String, String)]) -> Result<Option<u64>, ParseRequestError> {
+    let Some(value) = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value)
+    else {
+        return Ok(None);
+    };
+
+    value
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| ParseRequestError::InvalidContentLength)
+}
+
+pub fn is_chunked(headers: &[(String, String)]) -> bool {
+    headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("chunked"))
     })
 }
 
@@ -226,6 +305,21 @@ mod tests {
         assert_eq!(parsed.destination.host, "localhost");
         assert_eq!(parsed.destination.port, 9000);
         assert_eq!(parsed.destination.origin_form_target, "/v1/items");
+    }
+
+    #[test]
+    fn parses_response_status_and_headers() {
+        let bytes = b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";
+        let parsed = parse_response_head(bytes).unwrap();
+        assert_eq!(parsed.status_code, 201);
+        assert_eq!(parsed.reason, "Created");
+        assert_eq!(content_length(&parsed.headers).unwrap(), Some(2));
+    }
+
+    #[test]
+    fn detects_chunked_transfer_encoding_case_insensitively() {
+        let headers = vec![("Transfer-Encoding".into(), "gzip, Chunked".into())];
+        assert!(is_chunked(&headers));
     }
 
     #[test]
