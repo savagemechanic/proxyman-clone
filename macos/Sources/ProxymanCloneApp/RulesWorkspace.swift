@@ -11,7 +11,7 @@ struct RulesWorkspace: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Text("Request Rewrite Rules")
+                Text("Rewrite Rules")
                     .font(.title2.weight(.semibold))
                 Spacer()
                 Text(statusText)
@@ -65,7 +65,7 @@ struct RulesWorkspace: View {
                 ContentUnavailableView(
                     "No rewrite rules",
                     systemImage: "arrow.triangle.2.circlepath",
-                    description: Text("Add a rule to change request paths or headers before forwarding.")
+                    description: Text("Add a rule to change requests or responses before delivery.")
                 )
             } else {
                 List(selection: $selectedRuleID) {
@@ -125,17 +125,17 @@ struct RulesWorkspace: View {
                         VStack(alignment: .leading, spacing: 10) {
                             TextField("Host contains (optional)", text: optionalText(rule.hostContains))
                             TextField("Path prefix (optional)", text: optionalText(rule.pathPrefix))
-                            Text("Both matchers are ANDed. Empty matchers make the rule apply to every proxied request.")
+                            Text("Both matchers are ANDed. Empty matchers make the rule apply to every proxied request and its response.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         .padding(6)
                     }
 
-                    GroupBox("Actions") {
+                    GroupBox("Request Actions") {
                         VStack(alignment: .leading, spacing: 10) {
                             if rule.wrappedValue.actions.isEmpty {
-                                Text("No actions yet")
+                                Text("No request actions")
                                     .foregroundStyle(.secondary)
                             }
 
@@ -146,7 +146,7 @@ struct RulesWorkspace: View {
                                 }
                             }
 
-                            Menu("Add action", systemImage: "plus") {
+                            Menu("Add request action", systemImage: "plus") {
                                 Button("Set Path") {
                                     appendAction(.setPath("/"), to: rule)
                                 }
@@ -161,7 +161,40 @@ struct RulesWorkspace: View {
                         .padding(6)
                     }
 
-                    Text("Rules run from top to bottom. Later rules see path/header changes made by earlier rules.")
+                    GroupBox("Response Actions") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if rule.wrappedValue.responseActions.isEmpty {
+                                Text("No response actions")
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            ForEach(Array(rule.wrappedValue.responseActions.indices), id: \.self) { index in
+                                responseActionEditor(rule: rule, index: index)
+                                if index < rule.wrappedValue.responseActions.count - 1 {
+                                    Divider()
+                                }
+                            }
+
+                            Menu("Add response action", systemImage: "plus") {
+                                Button("Set Status") {
+                                    appendResponseAction(.setStatus(503), to: rule)
+                                }
+                                Button("Set Header") {
+                                    appendResponseAction(.setHeader(name: "X-Debug-Response", value: "1"), to: rule)
+                                }
+                                Button("Remove Header") {
+                                    appendResponseAction(.removeHeader("Server"), to: rule)
+                                }
+                            }
+
+                            Text("Status rewrites preserve the upstream body. The engine rejects 1xx, 204, 205, and 304 status overrides. Framing headers such as Content-Length and Transfer-Encoding cannot be rewritten here.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(6)
+                    }
+
+                    Text("Rules run from top to bottom. Later request rules see request changes made by earlier rules; response actions use the same matched rule order.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -211,6 +244,46 @@ struct RulesWorkspace: View {
                 }
             case .removeHeader:
                 TextField("Header name", text: removeHeaderName(action))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func responseActionEditor(rule: Binding<RewriteRule>, index: Int) -> some View {
+        let action = responseActionBinding(rule: rule, index: index)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Picker("Action", selection: responseActionKindBinding(action)) {
+                    ForEach(ResponseActionKind.allCases) { kind in
+                        Text(kind.title).tag(kind)
+                    }
+                }
+                .frame(maxWidth: 220)
+                Spacer()
+                Button(action: { moveResponseAction(in: rule, index: index, by: -1) }) {
+                    Image(systemName: "arrow.up")
+                }
+                .disabled(index == 0)
+                Button(action: { moveResponseAction(in: rule, index: index, by: 1) }) {
+                    Image(systemName: "arrow.down")
+                }
+                .disabled(index >= rule.wrappedValue.responseActions.count - 1)
+                Button(role: .destructive, action: { removeResponseAction(from: rule, index: index) }) {
+                    Image(systemName: "trash")
+                }
+            }
+
+            switch action.wrappedValue {
+            case .setStatus:
+                TextField("Status code", text: responseStatusText(action))
+                    .frame(maxWidth: 180)
+            case .setHeader:
+                HStack {
+                    TextField("Header name", text: responseHeaderName(action))
+                    TextField("Header value", text: responseHeaderValue(action))
+                }
+            case .removeHeader:
+                TextField("Header name", text: responseRemoveHeaderName(action))
             }
         }
     }
@@ -318,6 +391,84 @@ struct RulesWorkspace: View {
         )
     }
 
+    private func responseActionBinding(rule: Binding<RewriteRule>, index: Int) -> Binding<ResponseRewriteAction> {
+        Binding(
+            get: { rule.wrappedValue.responseActions[index] },
+            set: { value in
+                var copy = rule.wrappedValue
+                copy.responseActions[index] = value
+                rule.wrappedValue = copy
+            }
+        )
+    }
+
+    private func responseActionKindBinding(_ action: Binding<ResponseRewriteAction>) -> Binding<ResponseActionKind> {
+        Binding(
+            get: { ResponseActionKind(action.wrappedValue) },
+            set: { kind in
+                switch kind {
+                case .setStatus:
+                    action.wrappedValue = .setStatus(503)
+                case .setHeader:
+                    action.wrappedValue = .setHeader(name: "X-Debug-Response", value: "1")
+                case .removeHeader:
+                    action.wrappedValue = .removeHeader("Server")
+                }
+            }
+        )
+    }
+
+    private func responseStatusText(_ action: Binding<ResponseRewriteAction>) -> Binding<String> {
+        Binding(
+            get: {
+                if case .setStatus(let value) = action.wrappedValue { return String(value) }
+                return ""
+            },
+            set: { text in
+                guard let value = UInt16(text) else { return }
+                action.wrappedValue = .setStatus(value)
+            }
+        )
+    }
+
+    private func responseHeaderName(_ action: Binding<ResponseRewriteAction>) -> Binding<String> {
+        Binding(
+            get: {
+                if case .setHeader(let name, _) = action.wrappedValue { return name }
+                return ""
+            },
+            set: { name in
+                if case .setHeader(_, let value) = action.wrappedValue {
+                    action.wrappedValue = .setHeader(name: name, value: value)
+                }
+            }
+        )
+    }
+
+    private func responseHeaderValue(_ action: Binding<ResponseRewriteAction>) -> Binding<String> {
+        Binding(
+            get: {
+                if case .setHeader(_, let value) = action.wrappedValue { return value }
+                return ""
+            },
+            set: { value in
+                if case .setHeader(let name, _) = action.wrappedValue {
+                    action.wrappedValue = .setHeader(name: name, value: value)
+                }
+            }
+        )
+    }
+
+    private func responseRemoveHeaderName(_ action: Binding<ResponseRewriteAction>) -> Binding<String> {
+        Binding(
+            get: {
+                if case .removeHeader(let name) = action.wrappedValue { return name }
+                return ""
+            },
+            set: { action.wrappedValue = .removeHeader($0) }
+        )
+    }
+
     private func appendAction(_ action: RewriteAction, to rule: Binding<RewriteRule>) {
         var copy = rule.wrappedValue
         copy.actions.append(action)
@@ -336,6 +487,27 @@ struct RulesWorkspace: View {
         var copy = rule.wrappedValue
         guard copy.actions.indices.contains(index), copy.actions.indices.contains(destination) else { return }
         copy.actions.swapAt(index, destination)
+        rule.wrappedValue = copy
+    }
+
+    private func appendResponseAction(_ action: ResponseRewriteAction, to rule: Binding<RewriteRule>) {
+        var copy = rule.wrappedValue
+        copy.responseActions.append(action)
+        rule.wrappedValue = copy
+    }
+
+    private func removeResponseAction(from rule: Binding<RewriteRule>, index: Int) {
+        var copy = rule.wrappedValue
+        guard copy.responseActions.indices.contains(index) else { return }
+        copy.responseActions.remove(at: index)
+        rule.wrappedValue = copy
+    }
+
+    private func moveResponseAction(in rule: Binding<RewriteRule>, index: Int, by offset: Int) {
+        let destination = index + offset
+        var copy = rule.wrappedValue
+        guard copy.responseActions.indices.contains(index), copy.responseActions.indices.contains(destination) else { return }
+        copy.responseActions.swapAt(index, destination)
         rule.wrappedValue = copy
     }
 
@@ -380,7 +552,8 @@ struct RulesWorkspace: View {
         if let host = rule.hostContains { parts.append("host: \(host)") }
         if let path = rule.pathPrefix { parts.append("path: \(path)") }
         if parts.isEmpty { parts.append("all requests") }
-        parts.append("\(rule.actions.count) action\(rule.actions.count == 1 ? "" : "s")")
+        parts.append("\(rule.actions.count) req")
+        parts.append("\(rule.responseActions.count) res")
         return parts.joined(separator: " · ")
     }
 
@@ -440,6 +613,30 @@ private enum ActionKind: String, CaseIterable, Identifiable {
     init(_ action: RewriteAction) {
         switch action {
         case .setPath: self = .setPath
+        case .setHeader: self = .setHeader
+        case .removeHeader: self = .removeHeader
+        }
+    }
+}
+
+private enum ResponseActionKind: String, CaseIterable, Identifiable {
+    case setStatus
+    case setHeader
+    case removeHeader
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .setStatus: "Set Status"
+        case .setHeader: "Set Header"
+        case .removeHeader: "Remove Header"
+        }
+    }
+
+    init(_ action: ResponseRewriteAction) {
+        switch action {
+        case .setStatus: self = .setStatus
         case .setHeader: self = .setHeader
         case .removeHeader: self = .removeHeader
         }
