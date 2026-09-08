@@ -1,4 +1,5 @@
 mod certificates;
+mod rule_store;
 mod session;
 
 use std::{
@@ -22,6 +23,7 @@ use proxy_core::{
     },
     rules::{RewriteRule, apply_request_rules, apply_response_rules},
 };
+use rule_store::RuleStore;
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName};
 use session::SessionStore;
 use tokio::{
@@ -73,8 +75,38 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    let rule_store = RuleStore::new(rule_storage_path());
+    let initial_rules = match rule_store.load().await {
+        Ok(rules) => match validate_rewrite_rules(&rules) {
+            Ok(()) => {
+                info!(
+                    path = %rule_store.path().display(),
+                    rule_count = rules.len(),
+                    "loaded persistent rewrite rules"
+                );
+                rules
+            }
+            Err(error) => {
+                warn!(
+                    path = %rule_store.path().display(),
+                    %error,
+                    "persistent rewrite rules failed validation; starting with no rules"
+                );
+                Vec::new()
+            }
+        },
+        Err(error) => {
+            warn!(
+                path = %rule_store.path().display(),
+                %error,
+                "could not load persistent rewrite rules; starting with no rules"
+            );
+            Vec::new()
+        }
+    };
+
     let session = SessionStore::default();
-    let rewrite_rules = Arc::new(RwLock::new(Vec::new()));
+    let rewrite_rules = Arc::new(RwLock::new(initial_rules));
     let runtime = RuntimeConfig {
         tls_interception_enabled,
         certificate_authority,
@@ -106,8 +138,9 @@ async fn main() -> anyhow::Result<()> {
                 let status = Arc::clone(&status);
                 let session = session.clone();
                 let rewrite_rules = Arc::clone(&rewrite_rules);
+                let rule_store = rule_store.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = serve_control_client(stream, status, session, rewrite_rules).await {
+                    if let Err(error) = serve_control_client(stream, status, session, rewrite_rules, rule_store).await {
                         warn!(%peer, %error, "control client disconnected with error");
                     }
                 });
@@ -139,6 +172,7 @@ async fn serve_control_client(
     status: Arc<RwLock<EngineStatus>>,
     session: SessionStore,
     rewrite_rules: Arc<RwLock<Vec<RewriteRule>>>,
+    rule_store: RuleStore,
 ) -> anyhow::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -169,7 +203,24 @@ async fn serve_control_client(
                     .await?;
                 continue;
             }
-            *rewrite_rules.write().await = rules.clone();
+
+            let mut active_rules = rewrite_rules.write().await;
+            if let Err(error) = rule_store.save(rules).await {
+                let event = proxy_core::EngineEvent::Error {
+                    code: "rewrite_rule_persistence_failed".into(),
+                    message: error.to_string(),
+                };
+                writer
+                    .write_all(format!("{}\n", serde_json::to_string(&event)?).as_bytes())
+                    .await?;
+                continue;
+            }
+            *active_rules = rules.clone();
+            info!(
+                path = %rule_store.path().display(),
+                rule_count = rules.len(),
+                "persisted rewrite rules"
+            );
         }
 
         let snapshot = status.read().await.clone();
@@ -630,18 +681,29 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn rule_storage_path() -> PathBuf {
+    if let Ok(override_path) = std::env::var("PROXYMAN_CLONE_RULES_PATH") {
+        return PathBuf::from(override_path);
+    }
+
+    application_support_dir().join("rewrite-rules.json")
+}
+
 fn certificate_storage_dir() -> PathBuf {
     if let Ok(override_dir) = std::env::var("PROXYMAN_CLONE_CERT_DIR") {
         return PathBuf::from(override_dir);
     }
 
+    application_support_dir().join("certificates")
+}
+
+fn application_support_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home)
             .join("Library")
             .join("Application Support")
-            .join("ProxymanClone")
-            .join("certificates");
+            .join("ProxymanClone");
     }
 
-    PathBuf::from(".proxyman-clone/certificates")
+    PathBuf::from(".proxyman-clone")
 }
