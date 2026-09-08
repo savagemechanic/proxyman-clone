@@ -1,6 +1,9 @@
 use std::fmt;
 
-use proxy_core::{CapturedTransaction, HeaderField, http::{Destination, ParsedRequestHead}};
+use proxy_core::{
+    CapturedTransaction, HeaderField,
+    http::{Destination, ParsedRequestHead},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedReplayRequest {
@@ -50,24 +53,32 @@ impl fmt::Display for ReplayPreparationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedScheme(scheme) => write!(f, "unsupported replay scheme: {scheme}"),
-            Self::TunnelTransaction => f.write_str("CONNECT tunnel transactions cannot be replayed"),
+            Self::TunnelTransaction => {
+                f.write_str("CONNECT tunnel transactions cannot be replayed")
+            }
             Self::InvalidMethod => f.write_str("captured request method is not safe to serialize"),
             Self::InvalidTarget => f.write_str("captured request target is not valid origin-form"),
             Self::InvalidAuthority => f.write_str("captured request has an invalid Host authority"),
-            Self::UnsafeHeader(name) => write!(f, "captured request contains an unsafe header: {name}"),
+            Self::UnsafeHeader(name) => {
+                write!(f, "captured request contains an unsafe header: {name}")
+            }
             Self::UnsupportedTransferEncoding => {
                 f.write_str("requests using Transfer-Encoding cannot be safely replayed yet")
             }
             Self::TruncatedBody => f.write_str("captured request body is truncated"),
             Self::UnavailableBody => f.write_str("full textual request body is unavailable"),
-            Self::BodySizeMismatch => f.write_str("captured request body size does not match its preview"),
+            Self::BodySizeMismatch => {
+                f.write_str("captured request body size does not match its preview")
+            }
         }
     }
 }
 
 impl std::error::Error for ReplayPreparationError {}
 
-pub fn prepare(transaction: &CapturedTransaction) -> Result<PreparedReplayRequest, ReplayPreparationError> {
+pub fn prepare(
+    transaction: &CapturedTransaction,
+) -> Result<PreparedReplayRequest, ReplayPreparationError> {
     if transaction.scheme == "tunnel" {
         return Err(ReplayPreparationError::TunnelTransaction);
     }
@@ -170,9 +181,15 @@ fn replay_body(transaction: &CapturedTransaction) -> Result<Vec<u8>, ReplayPrepa
     Ok(body)
 }
 
-fn parse_authority(authority: &str, default_port: u16) -> Result<(String, u16), ReplayPreparationError> {
+fn parse_authority(
+    authority: &str,
+    default_port: u16,
+) -> Result<(String, u16), ReplayPreparationError> {
     let authority = authority.trim();
-    if authority.is_empty() || authority.bytes().any(|byte| byte.is_ascii_control() || byte == b' ')
+    if authority.is_empty()
+        || authority
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b' ')
     {
         return Err(ReplayPreparationError::InvalidAuthority);
     }
@@ -324,15 +341,20 @@ mod tests {
         let prepared = prepare(&transaction()).unwrap();
         assert_eq!(prepared.host, "example.com");
         assert_eq!(prepared.port, 443);
-        assert_eq!(prepared.parsed.destination.origin_form_target, "/v1/users?limit=2");
+        assert_eq!(
+            prepared.parsed.destination.origin_form_target,
+            "/v1/users?limit=2"
+        );
         assert!(prepared.parsed.headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("authorization") && value == "Bearer secret"
         }));
-        assert!(prepared
-            .parsed
-            .headers
-            .iter()
-            .all(|(name, _)| !name.eq_ignore_ascii_case("connection")));
+        assert!(
+            prepared
+                .parsed
+                .headers
+                .iter()
+                .all(|(name, _)| !name.eq_ignore_ascii_case("connection"))
+        );
         let raw = String::from_utf8(prepared.serialize()).unwrap();
         assert!(raw.starts_with("GET /v1/users?limit=2 HTTP/1.1\r\n"));
         assert!(raw.contains("Host: example.com\r\n"));
@@ -347,11 +369,13 @@ mod tests {
         let prepared = prepare(&transaction).unwrap();
         assert_eq!(prepared.host, "localhost");
         assert_eq!(prepared.port, 8081);
-        assert!(prepared
-            .parsed
-            .headers
-            .iter()
-            .any(|(name, value)| name == "Host" && value == "localhost:8081"));
+        assert!(
+            prepared
+                .parsed
+                .headers
+                .iter()
+                .any(|(name, value)| name == "Host" && value == "localhost:8081")
+        );
     }
 
     #[test]
@@ -373,9 +397,11 @@ mod tests {
 
         let prepared = prepare(&transaction).unwrap();
         assert_eq!(prepared.body, b"{\"x\":1}");
-        assert!(prepared.parsed.headers.iter().any(|(name, value)| {
-            name.eq_ignore_ascii_case("content-length") && value == "7"
-        }));
+        assert!(
+            prepared.parsed.headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("content-length") && value == "7"
+            })
+        );
     }
 
     #[test]
@@ -390,7 +416,10 @@ mod tests {
             total_bytes: 10,
             truncated: true,
         });
-        assert_eq!(prepare(&transaction), Err(ReplayPreparationError::TruncatedBody));
+        assert_eq!(
+            prepare(&transaction),
+            Err(ReplayPreparationError::TruncatedBody)
+        );
 
         transaction.request_body_bytes = 4;
         transaction.request_body_preview = Some(BodyPreview {
@@ -400,7 +429,10 @@ mod tests {
             total_bytes: 4,
             truncated: false,
         });
-        assert_eq!(prepare(&transaction), Err(ReplayPreparationError::UnavailableBody));
+        assert_eq!(
+            prepare(&transaction),
+            Err(ReplayPreparationError::UnavailableBody)
+        );
     }
 
     #[test]
