@@ -67,7 +67,9 @@ impl fmt::Display for ComposerPreparationError {
 
 impl std::error::Error for ComposerPreparationError {}
 
-pub fn prepare(request: &ComposedRequest) -> Result<PreparedComposedRequest, ComposerPreparationError> {
+pub fn prepare(
+    request: &ComposedRequest,
+) -> Result<PreparedComposedRequest, ComposerPreparationError> {
     let scheme = request.scheme.trim().to_ascii_lowercase();
     let default_port = match scheme.as_str() {
         "http" => 80,
@@ -91,7 +93,12 @@ pub fn prepare(request: &ComposedRequest) -> Result<PreparedComposedRequest, Com
         return Err(ComposerPreparationError::TooManyHeaders);
     }
 
-    let body = request.body.as_deref().unwrap_or_default().as_bytes().to_vec();
+    let body = request
+        .body
+        .as_deref()
+        .unwrap_or_default()
+        .as_bytes()
+        .to_vec();
     if body.len() > MAX_COMPOSED_BODY_BYTES {
         return Err(ComposerPreparationError::BodyTooLarge);
     }
@@ -109,9 +116,7 @@ pub fn prepare(request: &ComposedRequest) -> Result<PreparedComposedRequest, Com
             || !valid_token(&header.name)
             || !valid_header_value(&header.value)
         {
-            return Err(ComposerPreparationError::InvalidHeader(
-                header.name.clone(),
-            ));
+            return Err(ComposerPreparationError::InvalidHeader(header.name.clone()));
         }
         header_bytes = header_bytes
             .saturating_add(header.name.len())
@@ -123,10 +128,7 @@ pub fn prepare(request: &ComposedRequest) -> Result<PreparedComposedRequest, Com
         headers.push((header.name.clone(), header.value.clone()));
     }
 
-    headers.push((
-        "Host".into(),
-        format_authority(&host, port, default_port),
-    ));
+    headers.push(("Host".into(), format_authority(&host, port, default_port)));
     if request.body.is_some() {
         headers.push(("Content-Length".into(), body.len().to_string()));
     }
@@ -270,11 +272,13 @@ mod tests {
         assert_eq!(prepared.host, "example.com");
         assert_eq!(prepared.port, 443);
         assert_eq!(prepared.body, b"{\"ok\":true}");
-        assert!(prepared
-            .parsed
-            .headers
-            .iter()
-            .any(|(name, value)| name == "Host" && value == "example.com"));
+        assert!(
+            prepared
+                .parsed
+                .headers
+                .iter()
+                .any(|(name, value)| name == "Host" && value == "example.com")
+        );
         assert!(prepared.parsed.headers.iter().any(|(name, value)| {
             name == "Content-Length" && value == &prepared.body.len().to_string()
         }));
@@ -290,11 +294,13 @@ mod tests {
         let prepared = prepare(&request).unwrap();
         assert_eq!(prepared.host, "::1");
         assert_eq!(prepared.port, 8080);
-        assert!(prepared
-            .parsed
-            .headers
-            .iter()
-            .any(|(name, value)| name == "Host" && value == "[::1]:8080"));
+        assert!(
+            prepared
+                .parsed
+                .headers
+                .iter()
+                .any(|(name, value)| name == "Host" && value == "[::1]:8080")
+        );
     }
 
     #[test]
@@ -324,14 +330,23 @@ mod tests {
     fn rejects_invalid_target_port_and_oversized_body() {
         let mut request = request();
         request.target = "http://example.com/absolute".into();
-        assert_eq!(prepare(&request), Err(ComposerPreparationError::InvalidTarget));
+        assert_eq!(
+            prepare(&request),
+            Err(ComposerPreparationError::InvalidTarget)
+        );
 
         request.target = "/".into();
         request.port = Some(0);
-        assert_eq!(prepare(&request), Err(ComposerPreparationError::InvalidPort));
+        assert_eq!(
+            prepare(&request),
+            Err(ComposerPreparationError::InvalidPort)
+        );
 
         request.port = None;
         request.body = Some("x".repeat(MAX_COMPOSED_BODY_BYTES + 1));
-        assert_eq!(prepare(&request), Err(ComposerPreparationError::BodyTooLarge));
+        assert_eq!(
+            prepare(&request),
+            Err(ComposerPreparationError::BodyTooLarge)
+        );
     }
 }
