@@ -17,6 +17,41 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     }
 }
 
+public struct HeaderField: Codable, Equatable, Sendable {
+    public let name: String
+    public let value: String
+}
+
+public struct CapturedTransaction: Codable, Equatable, Identifiable, Sendable {
+    public let id: UInt64
+    public let startedAtUnixMs: UInt64
+    public let scheme: String
+    public let host: String
+    public let method: String
+    public let target: String
+    public let requestHeaders: [HeaderField]
+    public let requestBodyBytes: UInt64
+    public let statusCode: UInt16?
+    public let responseHeaders: [HeaderField]
+    public let responseBodyBytes: UInt64
+    public let state: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case startedAtUnixMs = "started_at_unix_ms"
+        case scheme
+        case host
+        case method
+        case target
+        case requestHeaders = "request_headers"
+        case requestBodyBytes = "request_body_bytes"
+        case statusCode = "status_code"
+        case responseHeaders = "response_headers"
+        case responseBodyBytes = "response_body_bytes"
+        case state
+    }
+}
+
 public enum EngineClientError: Error, Sendable {
     case invalidResponse
     case engineError(String)
@@ -33,14 +68,21 @@ public actor EngineClient {
 
     public func fetchStatus() async throws -> EngineStatus {
         let data = try await send(jsonLine: #"{"type":"get_status"}"#)
-        let envelope = try JSONDecoder().decode(EngineStatusEnvelope.self, from: data)
+        let envelope = try JSONDecoder().decode(EngineEnvelope.self, from: data)
         guard envelope.type == "status", let status = envelope.status else {
-            if envelope.type == "error" {
-                throw EngineClientError.engineError(envelope.message ?? "Unknown engine error")
-            }
-            throw EngineClientError.invalidResponse
+            throw envelope.errorOrInvalidResponse
         }
         return status
+    }
+
+    public func fetchTransactions(limit: Int = 250) async throws -> [CapturedTransaction] {
+        let safeLimit = max(1, min(limit, 1_000))
+        let data = try await send(jsonLine: #"{"type":"list_transactions","limit":\#(safeLimit)}"#)
+        let envelope = try JSONDecoder().decode(EngineEnvelope.self, from: data)
+        guard envelope.type == "transactions", let transactions = envelope.transactions else {
+            throw envelope.errorOrInvalidResponse
+        }
+        return transactions
     }
 
     private func send(jsonLine: String) async throws -> Data {
@@ -58,7 +100,7 @@ public actor EngineClient {
                             return
                         }
 
-                        connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { data, _, _, error in
+                        connection.receive(minimumIncompleteLength: 1, maximumLength: 4_194_304) { data, _, _, error in
                             if let error {
                                 completion.finish(.failure(error), connection: connection)
                             } else if let data {
@@ -108,8 +150,16 @@ private final class ContinuationBox: @unchecked Sendable {
     }
 }
 
-private struct EngineStatusEnvelope: Codable {
+private struct EngineEnvelope: Codable {
     let type: String
     let status: EngineStatus?
+    let transactions: [CapturedTransaction]?
     let message: String?
+
+    var errorOrInvalidResponse: EngineClientError {
+        if type == "error" {
+            return .engineError(message ?? "Unknown engine error")
+        }
+        return .invalidResponse
+    }
 }
