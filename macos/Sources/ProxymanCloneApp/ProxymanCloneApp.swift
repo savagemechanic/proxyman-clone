@@ -38,6 +38,7 @@ struct ContentView: View {
     @State private var transactions: [CapturedTransaction] = []
     @State private var selectedID: UInt64?
     @State private var isChecking = false
+    @State private var isReplaying = false
     @State private var searchText = ""
     @State private var trafficFilter: TrafficFilter = .all
 
@@ -189,6 +190,17 @@ struct ContentView: View {
                             .textSelection(.enabled)
                         Spacer()
                         Button {
+                            replay(transaction)
+                        } label: {
+                            if isReplaying {
+                                Label("Replaying", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                            } else {
+                                Label("Replay", systemImage: "arrow.clockwise")
+                            }
+                        }
+                        .disabled(isReplaying || transaction.scheme == "tunnel")
+                        .help(transaction.scheme == "tunnel" ? "CONNECT tunnels cannot be replayed" : "Replay this captured request")
+                        Button {
                             copyAsCurl(transaction)
                         } label: {
                             Label("Copy as cURL", systemImage: "doc.on.doc")
@@ -321,6 +333,29 @@ struct ContentView: View {
             return text
         }
         return pretty
+    }
+
+    private func replay(_ transaction: CapturedTransaction) {
+        guard !isReplaying, transaction.scheme != "tunnel" else { return }
+        isReplaying = true
+        statusText = "Replaying transaction \(transaction.id)…"
+        Task {
+            defer { isReplaying = false }
+            do {
+                let replayed = try await EngineClient().replayTransaction(id: transaction.id)
+                if let index = transactions.firstIndex(where: { $0.id == replayed.id }) {
+                    transactions[index] = replayed
+                } else {
+                    transactions.insert(replayed, at: 0)
+                }
+                selectedID = replayed.id
+                statusText = "Replayed as transaction \(replayed.id)"
+            } catch EngineClientError.engineError(let message) {
+                statusText = "Replay blocked: \(message)"
+            } catch {
+                statusText = "Replay failed: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func copyAsCurl(_ transaction: CapturedTransaction) {
