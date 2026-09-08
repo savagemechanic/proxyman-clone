@@ -366,7 +366,8 @@ mod tests {
         assert!(apply_request_rules(&mut mutable_request, &[rule.clone()]).is_empty());
         assert_eq!(mutable_request, original_request);
 
-        let mut response = parse_response_head(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n").unwrap();
+        let mut response =
+            parse_response_head(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n").unwrap();
         let original_response = response.clone();
         rule.response_actions = vec![
             ResponseRewriteAction::SetStatus { value: 204 },
