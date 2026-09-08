@@ -138,6 +138,12 @@ struct ContentView: View {
                             .font(.system(.headline, design: .monospaced))
                         Text("\(transaction.scheme)://\(transaction.host)\(transaction.target)")
                             .textSelection(.enabled)
+                        Spacer()
+                        Button {
+                            copyAsCurl(transaction)
+                        } label: {
+                            Label("Copy as cURL", systemImage: "doc.on.doc")
+                        }
                     }
 
                     Divider()
@@ -266,6 +272,20 @@ struct ContentView: View {
             return text
         }
         return pretty
+    }
+
+    private func copyAsCurl(_ transaction: CapturedTransaction) {
+        do {
+            let command = try CurlCommand.generate(from: transaction)
+            Clipboard.copy(command)
+            statusText = "Copied request as cURL"
+        } catch CurlCommandError.truncatedRequestBody {
+            statusText = "Cannot copy cURL: request body preview is truncated"
+        } catch CurlCommandError.unavailableRequestBody {
+            statusText = "Cannot copy cURL: full textual request body is unavailable"
+        } catch {
+            statusText = "Cannot copy request as cURL"
+        }
     }
 
     private func matchesSearch(_ transaction: CapturedTransaction) -> Bool {
