@@ -183,8 +183,9 @@ public enum HARExporter {
 
         if response {
             return values.compactMap { value in
-                guard let pair = value.split(separator: ";", maxSplits: 1).first,
-                      let equals = pair.firstIndex(of: "=") else { return nil }
+                guard let pairPart = value.split(separator: ";", maxSplits: 1).first else { return nil }
+                let pair = String(pairPart).trimmingCharacters(in: .whitespaces)
+                guard let equals = pair.firstIndex(of: "=") else { return nil }
                 return HARNameValue(
                     name: String(pair[..<equals]).trimmingCharacters(in: .whitespaces),
                     value: String(pair[pair.index(after: equals)...])
@@ -193,12 +194,12 @@ public enum HARExporter {
         }
 
         return values.flatMap { value in
-            value.split(separator: ";").compactMap { pair in
-                let trimmed = pair.trimmingCharacters(in: .whitespaces)
-                guard let equals = trimmed.firstIndex(of: "=") else { return nil }
+            value.split(separator: ";").compactMap { pairPart in
+                let pair = String(pairPart).trimmingCharacters(in: .whitespaces)
+                guard let equals = pair.firstIndex(of: "=") else { return nil }
                 return HARNameValue(
-                    name: String(trimmed[..<equals]),
-                    value: String(trimmed[trimmed.index(after: equals)...])
+                    name: String(pair[..<equals]),
+                    value: String(pair[pair.index(after: equals)...])
                 )
             }
         }
