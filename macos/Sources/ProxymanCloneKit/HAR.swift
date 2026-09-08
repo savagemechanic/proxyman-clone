@@ -220,14 +220,8 @@ public enum HARExporter {
 
     private static func iso8601(unixMilliseconds: UInt64) -> String {
         let seconds = Double(unixMilliseconds) / 1_000
-        return ISO8601DateFormatter.harFormatter.string(from: Date(timeIntervalSince1970: seconds))
-    }
-}
-
-private extension ISO8601DateFormatter {
-    static let harFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
+        return formatter.string(from: Date(timeIntervalSince1970: seconds))
+    }
 }
