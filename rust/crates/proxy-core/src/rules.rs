@@ -57,42 +57,81 @@ pub fn apply_request_rules(
             continue;
         }
 
+        let mut changed = false;
         for action in &rule.actions {
-            apply_action(request, action);
+            changed |= apply_action(request, action);
         }
-        applied.push(rule.id.clone());
+        if changed {
+            applied.push(rule.id.clone());
+        }
     }
 
     applied
 }
 
-fn apply_action(request: &mut ParsedRequestHead, action: &RewriteAction) {
+fn apply_action(request: &mut ParsedRequestHead, action: &RewriteAction) -> bool {
     match action {
         RewriteAction::SetPath { value } => {
-            let value = normalize_path(value);
+            let Some(value) = normalize_path(value) else {
+                return false;
+            };
             request.target = value.clone();
             request.destination.origin_form_target = value;
+            true
         }
         RewriteAction::SetHeader { name, value } => {
+            if !valid_header_name(name) || !valid_header_value(value) {
+                return false;
+            }
             request
                 .headers
                 .retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
             request.headers.push((name.clone(), value.clone()));
+            true
         }
         RewriteAction::RemoveHeader { name } => {
+            if !valid_header_name(name) {
+                return false;
+            }
+            let before = request.headers.len();
             request
                 .headers
                 .retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+            request.headers.len() != before
         }
     }
 }
 
-fn normalize_path(value: &str) -> String {
-    if value.starts_with('/') {
+fn normalize_path(value: &str) -> Option<String> {
+    if value.is_empty()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b' ')
+    {
+        return None;
+    }
+
+    Some(if value.starts_with('/') {
         value.to_owned()
     } else {
         format!("/{value}")
-    }
+    })
+}
+
+fn valid_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.'
+                        | b'^' | b'_' | b'`' | b'|' | b'~'
+                )
+        })
+}
+
+fn valid_header_value(value: &str) -> bool {
+    !value.bytes().any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
 }
 
 #[cfg(test)]
@@ -170,5 +209,34 @@ mod tests {
                 .map(|(_, value)| value.as_str()),
             Some("2")
         );
+    }
+
+    #[test]
+    fn unsafe_path_and_header_values_are_ignored() {
+        let mut request = request();
+        let original = request.clone();
+        let rules = vec![RewriteRule {
+            id: "unsafe".into(),
+            enabled: true,
+            host_contains: None,
+            path_prefix: None,
+            actions: vec![
+                RewriteAction::SetPath {
+                    value: "/ok\r\nInjected: yes".into(),
+                },
+                RewriteAction::SetHeader {
+                    name: "X-Test\r\nInjected".into(),
+                    value: "1".into(),
+                },
+                RewriteAction::SetHeader {
+                    name: "X-Test".into(),
+                    value: "safe\r\nInjected: yes".into(),
+                },
+            ],
+        }];
+
+        let applied = apply_request_rules(&mut request, &rules);
+        assert!(applied.is_empty());
+        assert_eq!(request, original);
     }
 }
