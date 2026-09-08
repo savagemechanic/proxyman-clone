@@ -35,18 +35,33 @@ import Testing
             .setPath("/v2/users"),
             .setHeader(name: "X-Debug", value: "1"),
             .removeHeader("Authorization")
+        ],
+        responseActions: [
+            .setStatus(503),
+            .setHeader(name: "X-Debug-Response", value: "1"),
+            .removeHeader("Server")
         ]
     )
 
     let data = try JSONEncoder().encode(rule)
     let json = try #require(String(data: data, encoding: .utf8))
     #expect(json.contains(#""host_contains":"example.com""#))
+    #expect(json.contains(#""response_actions""#))
     #expect(json.contains(#""type":"set_path""#))
+    #expect(json.contains(#""type":"set_status""#))
     #expect(json.contains(#""type":"set_header""#))
     #expect(json.contains(#""type":"remove_header""#))
 
     let decoded = try JSONDecoder().decode(RewriteRule.self, from: data)
     #expect(decoded == rule)
+}
+
+@Test func legacyRewriteRuleDefaultsResponseActionsToEmpty() throws {
+    let data = Data(#"{"id":"legacy","enabled":true,"host_contains":"example.com","path_prefix":null,"actions":[]}"#.utf8)
+    let rule = try JSONDecoder().decode(RewriteRule.self, from: data)
+
+    #expect(rule.id == "legacy")
+    #expect(rule.responseActions.isEmpty)
 }
 
 @Test func disabledRewriteRulePreservesEnabledState() throws {
@@ -55,12 +70,14 @@ import Testing
         enabled: false,
         hostContains: nil,
         pathPrefix: "/internal",
-        actions: [.removeHeader("X-Internal")]
+        actions: [.removeHeader("X-Internal")],
+        responseActions: [.removeHeader("Server")]
     )
 
     let data = try JSONEncoder().encode(rule)
     let decoded = try JSONDecoder().decode(RewriteRule.self, from: data)
 
     #expect(decoded.enabled == false)
+    #expect(decoded.responseActions == [.removeHeader("Server")])
     #expect(decoded == rule)
 }
