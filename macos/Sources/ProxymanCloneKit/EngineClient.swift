@@ -281,6 +281,23 @@ public actor EngineClient {
         return rules
     }
 
+    public func replayTransaction(id: UInt64) async throws -> CapturedTransaction {
+        let command = ReplayTransactionCommand(id: id)
+        let encoded = try JSONEncoder().encode(command)
+        guard let line = String(data: encoded, encoding: .utf8) else {
+            throw EngineClientError.invalidResponse
+        }
+        let data = try await send(jsonLine: line)
+        let envelope = try JSONDecoder().decode(EngineEnvelope.self, from: data)
+        guard envelope.type == "replay_result",
+              envelope.sourceTransactionID == id,
+              let transaction = envelope.transaction
+        else {
+            throw envelope.errorOrInvalidResponse
+        }
+        return transaction
+    }
+
     private func send(jsonLine: String) async throws -> Data {
         let connection = NWConnection(host: host, port: port, using: .tcp)
 
@@ -329,6 +346,11 @@ private struct ReplaceRewriteRulesCommand: Encodable {
     let rules: [RewriteRule]
 }
 
+private struct ReplayTransactionCommand: Encodable {
+    let type = "replay_transaction"
+    let id: UInt64
+}
+
 private final class ContinuationBox: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Data, Error>?
@@ -356,7 +378,19 @@ private struct EngineEnvelope: Codable {
     let status: EngineStatus?
     let transactions: [CapturedTransaction]?
     let rules: [RewriteRule]?
+    let sourceTransactionID: UInt64?
+    let transaction: CapturedTransaction?
     let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case status
+        case transactions
+        case rules
+        case sourceTransactionID = "source_transaction_id"
+        case transaction
+        case message
+    }
 
     var errorOrInvalidResponse: EngineClientError {
         if type == "error" {
