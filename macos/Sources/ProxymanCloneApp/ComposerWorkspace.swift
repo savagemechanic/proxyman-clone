@@ -14,7 +14,7 @@ struct ComposerWorkspace: View {
     @State private var target = "/"
     @State private var headers: [EditableComposerHeader] = []
     @State private var includeBody = false
-    @State private var body = ""
+    @State private var requestBody = ""
     @State private var notice: String?
     @State private var statusText = "Ready"
     @State private var isExecuting = false
@@ -169,13 +169,13 @@ struct ComposerWorkspace: View {
                 HStack {
                     Toggle("Include request body", isOn: $includeBody)
                     Spacer()
-                    Text("\(body.lengthOfBytes(using: .utf8)) bytes UTF-8")
+                    Text("\(requestBody.lengthOfBytes(using: .utf8)) bytes UTF-8")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 if includeBody {
-                    TextEditor(text: $body)
+                    TextEditor(text: $requestBody)
                         .font(.system(.body, design: .monospaced))
                         .frame(minHeight: 180)
                         .padding(6)
@@ -217,7 +217,7 @@ struct ComposerWorkspace: View {
             method: method.trimmingCharacters(in: .whitespacesAndNewlines),
             target: target,
             headers: customHeaders,
-            body: includeBody ? body : nil
+            body: includeBody ? requestBody : nil
         )
 
         isExecuting = true
@@ -244,7 +244,7 @@ struct ComposerWorkspace: View {
         target = prefill.target
         headers = prefill.headers.map { EditableComposerHeader(name: $0.name, value: $0.value) }
         includeBody = prefill.body != nil
-        body = prefill.body ?? ""
+        requestBody = prefill.body ?? ""
         notice = prefill.warning
         statusText = "Loaded captured request"
     }
@@ -257,7 +257,7 @@ struct ComposerWorkspace: View {
         target = "/"
         headers = []
         includeBody = false
-        body = ""
+        requestBody = ""
         notice = nil
         statusText = "Ready"
     }
