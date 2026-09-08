@@ -323,7 +323,7 @@ You can help with:
 - accessibility
 - security review
 
-Before starting a large feature, open an issue so implementation direction can be coordinated.
+Before starting a large feature, open an issue so implementation direction can be coordinated. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and review workflow.
 
 If you cannot contribute code, starring the repository, testing releases, filing precise bug reports, and sharing the project are all valuable contributions.
 
@@ -370,7 +370,7 @@ Every early star makes the project slightly easier for the next developer to dis
 
 ## License
 
-An open-source license will be added alongside the initial implementation. Until a license file is committed, the repository's source remains subject to normal copyright restrictions despite being publicly visible.
+Proxyman Clone is released under the [MIT License](LICENSE). You may use, modify, distribute, and build on it subject to the license terms.
 
 ---
 
