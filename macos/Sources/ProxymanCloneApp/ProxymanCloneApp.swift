@@ -13,6 +13,13 @@ struct ProxymanCloneApp: App {
     }
 }
 
+private enum Workspace: String, Identifiable, Hashable {
+    case traffic
+    case rules
+
+    var id: Self { self }
+}
+
 private enum TrafficFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case http = "HTTP"
@@ -25,6 +32,7 @@ private enum TrafficFilter: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
+    @State private var workspace: Workspace? = .traffic
     @State private var statusText = "Engine disconnected"
     @State private var tlsText = "TLS interception unknown"
     @State private var transactions: [CapturedTransaction] = []
@@ -32,6 +40,10 @@ struct ContentView: View {
     @State private var isChecking = false
     @State private var searchText = ""
     @State private var trafficFilter: TrafficFilter = .all
+
+    private var activeWorkspace: Workspace {
+        workspace ?? .traffic
+    }
 
     private var filteredTransactions: [CapturedTransaction] {
         transactions.filter { transaction in
@@ -45,12 +57,50 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List {
-                Label("All Traffic", systemImage: "arrow.left.arrow.right")
-                Label("Pinned", systemImage: "pin")
+            List(selection: $workspace) {
+                Label("Traffic", systemImage: "arrow.left.arrow.right")
+                    .tag(Workspace.traffic)
+                Label("Rules", systemImage: "slider.horizontal.3")
+                    .tag(Workspace.rules)
             }
             .navigationTitle("Proxyman Clone")
         } content: {
+            contentColumn
+        } detail: {
+            detailColumn
+        }
+        .toolbar {
+            if activeWorkspace == .traffic {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Text(statusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        statusText = HARExportPanel.export(transactions: transactions)
+                    } label: {
+                        Label("Export HAR", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(transactions.isEmpty)
+                    Button(action: refresh) {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isChecking)
+                }
+            }
+        }
+        .task(id: workspace) {
+            guard activeWorkspace == .traffic else { return }
+            while !Task.isCancelled {
+                refresh()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var contentColumn: some View {
+        switch activeWorkspace {
+        case .traffic:
             VStack(spacing: 0) {
                 filterBar
                 Divider()
@@ -58,32 +108,25 @@ struct ContentView: View {
             }
             .navigationTitle("Traffic")
             .searchable(text: $searchText, prompt: "Method, host, path, status")
-        } detail: {
+        case .rules:
+            ContentUnavailableView(
+                "Request Rewrite Rules",
+                systemImage: "slider.horizontal.3",
+                description: Text("Create and order rules in the editor. Rules are applied before requests are forwarded upstream.")
+            )
+            .navigationTitle("Rules")
+        }
+    }
+
+    @ViewBuilder
+    private var detailColumn: some View {
+        switch activeWorkspace {
+        case .traffic:
             inspector
                 .navigationTitle("Inspector")
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Text(statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button {
-                    statusText = HARExportPanel.export(transactions: transactions)
-                } label: {
-                    Label("Export HAR", systemImage: "square.and.arrow.up")
-                }
-                .disabled(transactions.isEmpty)
-                Button(action: refresh) {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .disabled(isChecking)
-            }
-        }
-        .task {
-            while !Task.isCancelled {
-                refresh()
-                try? await Task.sleep(for: .seconds(1))
-            }
+        case .rules:
+            RulesWorkspace()
+                .navigationTitle("Rules")
         }
     }
 

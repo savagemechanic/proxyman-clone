@@ -72,6 +72,85 @@ public struct CapturedTransaction: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct RewriteRule: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var enabled: Bool
+    public var hostContains: String?
+    public var pathPrefix: String?
+    public var actions: [RewriteAction]
+
+    public init(
+        id: String,
+        enabled: Bool = true,
+        hostContains: String? = nil,
+        pathPrefix: String? = nil,
+        actions: [RewriteAction] = []
+    ) {
+        self.id = id
+        self.enabled = enabled
+        self.hostContains = hostContains
+        self.pathPrefix = pathPrefix
+        self.actions = actions
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case enabled
+        case hostContains = "host_contains"
+        case pathPrefix = "path_prefix"
+        case actions
+    }
+}
+
+public enum RewriteAction: Codable, Equatable, Sendable {
+    case setPath(String)
+    case setHeader(name: String, value: String)
+    case removeHeader(String)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case value
+        case name
+    }
+
+    private enum Kind: String, Codable {
+        case setPath = "set_path"
+        case setHeader = "set_header"
+        case removeHeader = "remove_header"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .type) {
+        case .setPath:
+            self = .setPath(try container.decode(String.self, forKey: .value))
+        case .setHeader:
+            self = .setHeader(
+                name: try container.decode(String.self, forKey: .name),
+                value: try container.decode(String.self, forKey: .value)
+            )
+        case .removeHeader:
+            self = .removeHeader(try container.decode(String.self, forKey: .name))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .setPath(let value):
+            try container.encode(Kind.setPath, forKey: .type)
+            try container.encode(value, forKey: .value)
+        case .setHeader(let name, let value):
+            try container.encode(Kind.setHeader, forKey: .type)
+            try container.encode(name, forKey: .name)
+            try container.encode(value, forKey: .value)
+        case .removeHeader(let name):
+            try container.encode(Kind.removeHeader, forKey: .type)
+            try container.encode(name, forKey: .name)
+        }
+    }
+}
+
 public enum EngineClientError: Error, Sendable {
     case invalidResponse
     case engineError(String)
@@ -103,6 +182,30 @@ public actor EngineClient {
             throw envelope.errorOrInvalidResponse
         }
         return transactions
+    }
+
+    public func fetchRewriteRules() async throws -> [RewriteRule] {
+        let data = try await send(jsonLine: #"{"type":"list_rewrite_rules"}"#)
+        let envelope = try JSONDecoder().decode(EngineEnvelope.self, from: data)
+        guard envelope.type == "rewrite_rules", let rules = envelope.rules else {
+            throw envelope.errorOrInvalidResponse
+        }
+        return rules
+    }
+
+    @discardableResult
+    public func replaceRewriteRules(_ rules: [RewriteRule]) async throws -> [RewriteRule] {
+        let command = ReplaceRewriteRulesCommand(rules: rules)
+        let encoded = try JSONEncoder().encode(command)
+        guard let line = String(data: encoded, encoding: .utf8) else {
+            throw EngineClientError.invalidResponse
+        }
+        let data = try await send(jsonLine: line)
+        let envelope = try JSONDecoder().decode(EngineEnvelope.self, from: data)
+        guard envelope.type == "rewrite_rules", let rules = envelope.rules else {
+            throw envelope.errorOrInvalidResponse
+        }
+        return rules
     }
 
     private func send(jsonLine: String) async throws -> Data {
@@ -148,6 +251,11 @@ public actor EngineClient {
     }
 }
 
+private struct ReplaceRewriteRulesCommand: Encodable {
+    let type = "replace_rewrite_rules"
+    let rules: [RewriteRule]
+}
+
 private final class ContinuationBox: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Data, Error>?
@@ -174,6 +282,7 @@ private struct EngineEnvelope: Codable {
     let type: String
     let status: EngineStatus?
     let transactions: [CapturedTransaction]?
+    let rules: [RewriteRule]?
     let message: String?
 
     var errorOrInvalidResponse: EngineClientError {
